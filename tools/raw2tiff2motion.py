@@ -1,78 +1,96 @@
 #!/bin/python3
-# Copyright Jacob Dybvald Ludvigsen, crackwitz, 2022
-# This is free software, licenced under GPLv3-or-later
+# Copyright Jacob Dybvald Ludvigsen, Christoph Rackwitz, 2022
+# This is free software, licenced under BSD-3-Clause
 #install dependencies: pip3 install numpy rawpy imageio matplotlib memory-profiler opencv-contrib-python
 
+import random
 import numpy as np
 import rawpy
 import imageio
 import argparse
 import cv2 as cv
 import matplotlib.pyplot as plt
+from pathlib import Path
 from memory_profiler import profile
 
-
-# Take input, convert to list with leading zeroes and  return
-@profile
+#breakpoint()
+# Take input, expand to range, convert to list with leading zeroes and return
+#@profile
 def retFileList():
     fileList = []
+    firstFrame = ''
+    lastFrame = ''
     parser = argparse.ArgumentParser()
-    parser.add_argument(type=int, nargs = 2, action='store', dest='fileList', default=False, help='numbes of first and last image files to be read')
+    parser.add_argument(type=int, nargs = 2, action='store', dest='fileIndex', \
+          default=False, help='numbes of first and last image files to be read')
+    parser.add_argument(type=Path, dest="srcDirectory", default='/dev/shm/', \
+          help='which directory to read images from. Leave empty for /dev/shm/')
     args = parser.parse_args()
-    inputFileList = args.fileList
-    fileList.extend(range(*inputFileList))
-    fileList = map(str, fileList)
+    srcDir = args.srcDirectory
+    firstFrame, lastFrame = args.fileIndex
+    r = range(firstFrame, lastFrame)
+    fileList = list([*r])
+    fileList.append(lastFrame)
+    fileListMap = map(str, fileList)
     numberList = [str(x).zfill(4) for x in list(fileList)]
     fileList = ["out."+str(x)+".raw" for x in list(numberList)]
-    return fileList, numberList
+    return fileList, numberList, srcDir
 
 
+rawList, numberList, srcDir = retFileList()
+imagePath = str(srcDir)
+#breakpoint()
 
 # prepend headers to rawfiles if they don't already have a header
-rawList, numberList = retFileList()
-hf = open('/dev/shm/hd0.32k', 'rb')
+hf = open('/home/Jacob/pi/raw/hd0.32k', 'rb')
 header = hf.read()
 hf.close()
 for x in list(rawList):
-    with open('/dev/shm/' + x, 'rb') as rawFile: partialRaw = rawFile.read(32)
+    with open(imagePath + '/' +x, 'rb') as rawFile: partialRaw = rawFile.read(32)
     if header != partialRaw:
-        with open('/dev/shm/' + x, 'rb') as original: data = original.read()
-        with open('hd.' + x, 'wb') as modified: modified.write(header + data)
+        with open(imagePath  + '/' + x, 'rb') as original: data = original.read()
+        with open(imagePath + '/hd.' + x, 'wb') as modified: modified.write(header + data)
 
 # list with modified filenames
-headedList = ["hd."+str(x) for x in list(rawList)]
+headedList = [imagePath + '/hd.' + str(x) for x in list(rawList)]
+breakpoint()
 
-# Convert from raw to viewable format and save
-for (x,y) in zip(headedList, numberList):
-    with rawpy.imread(x) as raw:
-        rgb = raw.postprocess(gamma=(1,1), no_auto_bright=True, output_bps=16)
-    imageio.imsave('img.'+y+'.gif', rgb)
+# Convert from raw to viewable format, stretch lines, denoise
+def convertAndDenoise():
+    grayList = []
+    viewableList = []
+    nframes = int(len(headedList))
+    denoiseList = (nframes - 5)
+    for (x,y) in zip(headedList, numberList):
+        numberIndex = numberList.index(y)
+        currentImage = (imagePath + '/img.'+ y +'.tiff')
+        viewableList.append(currentImage)
+        with rawpy.imread(x) as raw:
+            rgb = raw.postprocess(gamma=(1,1), no_auto_bright=False, output_bps=8)
+            grayframe = cv.cvtColor(rgb, cv.COLOR_BGR2GRAY)
+        grayList.append(grayframe)
+        #if numberIndex < 5 or numberIndex > denoiseList:
+        cleanImage = cv.fastNlMeansDenoising(src=grayframe, \
+                   h=3, templateWindowSize=7, searchWindowSize=21)
+        #else:
+        #    with grayList as grays:
+        #        cleanImage = cv.fastNlMeansDenoisingMulti(srcImgs=grayList, imgToDenoiseIndex=numberIndex, \
+        #        temporalWindowSize=3, h=3, templateWindowSize=7, searchWindowSize=21)
+        imageio.imsave(currentImage, cleanImage)
+    frames = np.array(grayList)
+    return nframes, viewableList, frames
 
 
-# list with viewable filenames
-viewableList = ['img.'+str(x)+'.gif' for x in list(numberList)]
-
-# store frames in numpy array and  print their shape and number
-@profile
-def imageArray():
-    frames = []
-    imgShape = []
-    with list(viewableList) as List:
-        for i in List:
-        image = cv.imread(i)
-        image = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
-        frames.append(image)
-    frames = np.array(frames)
-    imgShape = image.shape
-    return frames, imgShape
-
-frames, imgShape = imageArray()
-nframes = len(frames)
-height, width = imgShape
+# get number of frames and list with viewable filenames, check dimensions
+nframes, viewableList, frames = convertAndDenoise()
+#breakpoint()
+random_frame = random.choice(viewableList)
+testFrame = cv.imread(random_frame, cv.IMREAD_GRAYSCALE)
+height, width = testFrame.shape
 
 
 # counting pixels
-toothx = 160 # pixels, ~4 teeth, width/4, 640/4
+toothx = 160 # pixels, ~4px/tooth, width/4, 640/4
 
 # calculate good points to track
 @profile
