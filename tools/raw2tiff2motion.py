@@ -3,15 +3,17 @@
 # This is free software, licenced under BSD-3-Clause
 #install dependencies: pip3 install numpy rawpy imageio matplotlib memory-profiler opencv-contrib-python
 
-import random
-import numpy as np
-import rawpy
-import imageio
-import argparse
-import cv2 as cv
-import matplotlib.pyplot as plt
-from pathlib import Path
-from memory_profiler import profile
+import subprocess # to execute c-program "double"
+import linecache # to read long files line by line efficiently
+import random # to choose a random image from image range
+import numpy as np # to manipulate images as arrays
+import rawpy # to convert from raw image format to viewable RGB format
+import imageio # to save and read images in various formats
+import argparse # to accept command-line input
+import cv2 as cv # to use various image manipulations
+import matplotlib.pyplot as plt # for plot functionality
+from pathlib import Path # to handle directory paths properly
+from memory_profiler import profile # for memory benchmarking
 
 #breakpoint()
 # Take input, expand to range, convert to list with leading zeroes and return
@@ -22,22 +24,25 @@ def retFileList():
     lastFrame = ''
     parser = argparse.ArgumentParser()
     parser.add_argument(type=int, nargs = 2, action='store', dest='fileIndex', \
-          default=False, help='numbes of first and last image files to be read')
-    parser.add_argument(type=Path, dest="srcDirectory", default='/dev/shm/', \
-          help='which directory to read images from. Leave empty for /dev/shm/')
+          default=False, help='numbers of first and last image files to be read')
+    parser.add_argument('-p', '--path', nargs='?', type=Path, dest="srcDirectory", default='/dev/shm/', \
+          help='which directory to read images from. Specify with "-p <path-to-folder>" or "--path <path-to-folder". Leave empty for /dev/shm/')
+    parser.add_argument('-d', nargs='?', type=str, dest='doLineDoubling', action='store', \
+           help='optionally add "-d" if images were recorded with line skips, to stretch lines.') 
     args = parser.parse_args()
     srcDir = args.srcDirectory
     firstFrame, lastFrame = args.fileIndex
+    needsLineDoubling = args.doLineDoubling
     r = range(firstFrame, lastFrame)
     fileList = list([*r])
     fileList.append(lastFrame)
     fileListMap = map(str, fileList)
     numberList = [str(x).zfill(4) for x in list(fileList)]
     fileList = ["out."+str(x)+".raw" for x in list(numberList)]
-    return fileList, numberList, srcDir
+    return fileList, numberList, srcDir, needsLineDoubling
 
 
-rawList, numberList, srcDir = retFileList()
+rawList, numberList, srcDir, needsDoubling = retFileList()
 imagePath = str(srcDir)
 #breakpoint()
 
@@ -53,10 +58,11 @@ for x in list(rawList):
 
 # list with modified filenames
 headedList = [imagePath + '/hd.' + str(x) for x in list(rawList)]
-breakpoint()
+#breakpoint()
 
 # Convert from raw to viewable format, stretch lines, denoise
-def convertAndDenoise():
+# Does denoising of the bayer format image before demosaicing
+def convertAndPostProcess():
     grayList = []
     viewableList = []
     nframes = int(len(headedList))
@@ -66,23 +72,25 @@ def convertAndDenoise():
         currentImage = (imagePath + '/img.'+ y +'.tiff')
         viewableList.append(currentImage)
         with rawpy.imread(x) as raw:
-            rgb = raw.postprocess(gamma=(1,1), no_auto_bright=False, output_bps=8)
+            rgb = raw.postprocess(fbdd_noise_reduction=rawpy.FBDDNoiseReductionMode.Full, no_auto_bright=False, output_bps=8)
             grayframe = cv.cvtColor(rgb, cv.COLOR_BGR2GRAY)
+            if needsDoubling == '-d':
+                subprocess.Popen(double, currentImage)
         grayList.append(grayframe)
-        #if numberIndex < 5 or numberIndex > denoiseList:
+        #if numberIndex < 5 or numberIndex > denoiseList: # denoise images individually
         cleanImage = cv.fastNlMeansDenoising(src=grayframe, \
                    h=3, templateWindowSize=7, searchWindowSize=21)
         #else:
-        #    with grayList as grays:
+        #    with grayList as grays: # denoise using neighbouring images as template
         #        cleanImage = cv.fastNlMeansDenoisingMulti(srcImgs=grayList, imgToDenoiseIndex=numberIndex, \
         #        temporalWindowSize=3, h=3, templateWindowSize=7, searchWindowSize=21)
-        imageio.imsave(currentImage, cleanImage)
+        imageio.imwrite(currentImage, cleanImage)
     frames = np.array(grayList)
     return nframes, viewableList, frames
 
 
 # get number of frames and list with viewable filenames, check dimensions
-nframes, viewableList, frames = convertAndDenoise()
+nframes, viewableList, frames = convertAndPostProcess()
 #breakpoint()
 random_frame = random.choice(viewableList)
 testFrame = cv.imread(random_frame, cv.IMREAD_GRAYSCALE)
@@ -113,10 +121,10 @@ def calculate_shift(f1, f2, normalize=True):
     imshow(scores)
     canvas = cv.cvtColor(scores, cv.COLOR_GRAY2BGR)
     cv.circle(canvas, center=maxLoc, radius=3, thickness=cv.FILLED, color=(0,0,1))
-#    imshow(canvas)
+    imshow(canvas)
 
-
-scale = 4
+#upscale frames to have more data
+scale = 2
 scaled_frames = []
 for frame in frames:
 
@@ -165,14 +173,21 @@ def find_good_keyframe(current_frame, tolerance=5):
             break
 
     return k
-
+#breakpoint()
 k = 0
 while k < nframes:
     anchor = scaled_frames[anchor_index]
     frame = scaled_frames[k]
     relshift = calculate_shift(anchor, frame, normalize=False) / scale
     (relx, rely) = relshift
-
+    #assosiate timestamps to images
+    if k == 0:
+        timestamp = 1 #should be zero, but set as 1 to avoid devision by zero. temporary workaround.
+    else:
+        line = linecache.getline(imagePath + "/tstamps.csv", k+1) #fetch specific line from cached file, an efficient method.  since k is 0-indexed and getline is 1-indexed, we must increment with k+1
+        timestamp = line.split(",")[0] # store whatever comes before comma in the specific line as timestamp. microsecond format
+    print (timestamp)
+    relx = relx // (int(timestamp)//1000000) #converting from non-timebound relative motion to timebound (seconds) relative motion
     keep_going = True
     if abs(relx) > xmax:
         assert k > 0 # because that would be ridiculous, autocorrelation not saying "0"
