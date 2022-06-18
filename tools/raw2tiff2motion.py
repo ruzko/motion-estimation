@@ -51,8 +51,8 @@ hf = open('/home/Jacob/pi/raw/hd0.32k', 'rb')
 header = hf.read()
 hf.close()
 for x in list(rawList):
-    with open(imagePath + '/' +x, 'rb') as rawFile: partialRaw = rawFile.read(32)
-    if header != partialRaw:
+    with open(imagePath + '/' +x, 'rb') as rawFile: partialRaw = rawFile.read(32) # read first 32 blocks of raw
+    if header != partialRaw: # check whether the first 32 blocks of the rawfile is identical to the header
         with open(imagePath  + '/' + x, 'rb') as original: data = original.read()
         with open(imagePath + '/hd.' + x, 'wb') as modified: modified.write(header + data)
 
@@ -98,10 +98,14 @@ height, width = testFrame.shape
 
 
 # counting pixels
+max_filament_speed = 140 #mm/s
+pixels_per_mm = 611 # estimated by counting pixels between edges of known object
+max_filament_speed = pixels_per_mm * max_filament_speed # px/s
+max_filament_speed = max_filament_speed / 1000000 # conversion to px/microsecond (px/s *s/1 000 000 us)
 toothx = 160 # pixels, ~4px/tooth, width/4, 640/4
 
 # calculate good points to track
-@profile
+#@profile
 def calculate_shift(f1, f2, normalize=True):
     assert f1.shape == f2.shape
     (height, width) = f1.shape[:2]
@@ -118,10 +122,10 @@ def calculate_shift(f1, f2, normalize=True):
 
     scores -= scores.min()
     scores /= scores.max()
-    imshow(scores)
+#    imshow(scores)
     canvas = cv.cvtColor(scores, cv.COLOR_GRAY2BGR)
     cv.circle(canvas, center=maxLoc, radius=3, thickness=cv.FILLED, color=(0,0,1))
-    imshow(canvas)
+#    imshow(canvas)
 
 #upscale frames to have more data
 scale = 2
@@ -154,13 +158,13 @@ cshift = np.cumsum(shifts, axis=0)
 
 
 
-xmax = 1 * toothx
+#xmax = 1 * toothx
 anchor_index = 0
 anchor_pos = np.float32([0,0])
 
-
+breakpoint()
 abs_shifts = []
-@profile
+#@profile
 def find_good_keyframe(current_frame, tolerance=5):
     # test from k-1 down for frames that didn't move much vs the previous one
     k = current_frame
@@ -186,8 +190,9 @@ while k < nframes:
     else:
         line = linecache.getline(imagePath + "/tstamps.csv", k+1) #fetch specific line from cached file, an efficient method.  since k is 0-indexed and getline is 1-indexed, we must increment with k+1
         timestamp = line.split(",")[0] # store whatever comes before comma in the specific line as timestamp. microsecond format
-    print (timestamp)
-    relx = relx // (int(timestamp)//1000000) #converting from non-timebound relative motion to timebound (seconds) relative motion
+#    print (timestamp)
+    relx = relx / (int(timestamp)) #converting from non-timebound relative motion to timebound (seconds) relative motion
+    xmax = max_filament_speed * (int(timestamp))
     keep_going = True
     if abs(relx) > xmax:
         assert k > 0 # because that would be ridiculous, autocorrelation not saying "0"
