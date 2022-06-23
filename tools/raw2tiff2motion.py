@@ -67,16 +67,17 @@ def convertAndPostProcess():
     viewableList = []
     nframes = int(len(headedList))
     denoiseList = (nframes - 5)
+    
     for (x,y) in zip(headedList, numberList):
         numberIndex = numberList.index(y)
         currentImage = (imagePath + '/img.'+ y +'.tiff')
-        viewableList.append(currentImage)
+#        viewableList.append(currentImage)
         with rawpy.imread(x) as raw:
             rgb = raw.postprocess(fbdd_noise_reduction=rawpy.FBDDNoiseReductionMode.Full, no_auto_bright=False, output_bps=8)
             grayframe = cv.cvtColor(rgb, cv.COLOR_BGR2GRAY)
             if needsDoubling == '-d':
                 subprocess.Popen(double, currentImage)
-        grayList.append(grayframe)
+#        grayList.append(grayframe)
         #if numberIndex < 5 or numberIndex > denoiseList: # denoise images individually
         cleanImage = cv.fastNlMeansDenoising(src=grayframe, \
                    h=3, templateWindowSize=7, searchWindowSize=21)
@@ -87,6 +88,9 @@ def convertAndPostProcess():
         imageio.imwrite(currentImage, cleanImage)
     frames = np.array(grayList)
     return nframes, viewableList, frames
+
+
+# split dataset based on filesize
 
 
 # get number of frames and list with viewable filenames, check dimensions
