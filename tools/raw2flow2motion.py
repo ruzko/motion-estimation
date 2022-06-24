@@ -44,28 +44,35 @@ def retFileList():
 
 rawList, numberList, srcDir, needsDoubling = retFileList()
 imagePath = str(srcDir)
-#breakpoint()
+
 
 # prepend headers to rawfiles if they don't already have a header
-hf = open('/home/Jacob/Dokumenter/03-Skole/01 - UiT universitet/År 3/08-Bacheloroppgave/pi-media/raw/hd0.32k', 'rb')
-header = hf.read()
-hf.close()
-for x in list(rawList):
-    with open(imagePath + '/' +x, 'rb') as rawFile: partialRaw = rawFile.read(32) # read first 32 blocks of raw
-    if header != partialRaw: # check whether the first 32 blocks of the rawfile is identical to the header
-        with open(imagePath  + '/' + x, 'rb') as original: data = original.read()
-        with open(imagePath + '/hd.' + x, 'wb') as modified: modified.write(header + data)
+def checkRawHeader ():
+    hf = open('/home/Jacob/Dokumenter/03-Skole/01 - UiT universitet/År 3/08-Bacheloroppgave/pi-media/raw/hd0.32k', 'rb')
+    header = hf.read()
+    hf.close()
+    for x in list(rawList):
+        with open(imagePath + '/' +x, 'rb') as rawFile: partialRaw = rawFile.read(32) # read first 32 blocks of raw
+        if header != partialRaw: # check whether the first 32 blocks of the rawfile is identical to the header
+            with open(imagePath  + '/' + x, 'rb') as original: data = original.read()
+            with open(imagePath + '/hd.' + x, 'wb') as modified: modified.write(header + data)
+    return
 
-# list with modified filenames
+
+
 
 # breaking list into chunks
+
 chunk_size = 10 #images held in memory at once
 chunked_rawList = [rawList[i:i+chunk_size] for i in range(0, len(rawList), chunk_size)]
 chunked_numberList = [numberList[i:i+chunk_size] for i in range(0, len(numberList), chunk_size)]
 
+
+# list with files which have a header
 headedList = [imagePath + '/hd.' + str(x) for x in list(rawList)]
 viewableList = []
-#breakpoint()
+
+
 
 # Convert from raw to viewable format, stretch lines, denoise
 # Does denoising of the bayer format image before demosaicing
@@ -110,32 +117,52 @@ pixels_per_mm = 611 # estimated by counting pixels between edges of known object
 max_filament_speed = pixels_per_mm * max_filament_speed # px/s
 max_filament_speed = max_filament_speed / 1000000 # conversion to px/microsecond (px/s *s/1 000 000 us)
 
-def calcGFTTShift(fimg1, fimg2):
-    frame1=cv.imread(fimg1, 0)
-    frame2=cv.imread(fimg2, 0)
-    pts1=cv.goodFeaturesToTrack(frame1, 1000, 0.01, 30)
-    pts2=cv.goodFeaturesToTrack(frame2, 1000, 0.01, 30)
+
+
+
+def calc_feature_shift(currentFrame, nextFrame):
+    # sanity checks
+#    if currentFrame == nextFrame:
+#        return None
+
+    frame1 = cv.imread(currentFrame, 0)
+    frame2 = cv.imread(nextFrame, 0)
+    pts1 = cv.goodFeaturesToTrack(frame1, 600, 0.01, 10)
+    pts2 = cv.goodFeaturesToTrack(frame2, 600, 0.01, 10)
     nextPts, status, err = cv.calcOpticalFlowPyrLK(frame1, frame2, pts1, pts2)
-    # print status
-    pts1Good=pts1[ status==1 ]
-    # pts1Good=np.reshape(pts1Good, (pts1Good.shape[0],1,pts1Good.shape[1]))
-    nextPtsG=nextPts[ status==1 ]
-    # nextPtsG=np.reshape(nextPtsG, (nextPtsG.shape[0],1,nextPtsG.shape[1]))
-    # T=cv2.estimateRigidTransform(pts1Good, nextPtsG, True)
-    T,msk=cv.findHomography(pts1Good, nextPtsG, cv.USAC_MAGSAC)
-    dx,dy=T[0,2],T[1,2]
-    dxy=(dx,dy)
-    tmp=np.zeros((frame1.shape[0], frame1.shape[1], 3), np.uint8)
-    frame2_shift=np.roll(frame2, int(np.floor(-dxy[0])), 1)
-    fram2_shift=np.roll(frame2_shift, int(np.floor(-dxy[1])), 0)
-    tmp[:,:,2]=frame1
-    tmp[:,:,1]=frame2_shift
-    tmp[:,:,0]=0
+#    print (status)
+    pts1Good = pts1[ status==1 ]
+    #pts1Good=np.reshape(pts1Good, (pts1Good.shape[0],1,pts1Good.shape[1]))
+    nextPtsG = nextPts[ status==1 ]
+    #nextPtsG=np.reshape(nextPtsG, (nextPtsG.shape[0],1,nextPtsG.shape[1]))
+    matrixTransform, status = cv.estimateAffinePartial2D(pts1, nextPts)
+    #T,msk=cv.findHomography(pts1Good, nextPtsG, cv.USAC_MAGSAC)
+    dx, dy = matrixTransform[0:2],matrixTransform[1:2]
+#    dy = matrixTransform[1:2]
+#    dxy = (dx,dy)
+#    tmp = np.zeros((frame1.shape[0], frame1.shape[1], 3), np.uint8)
+#    frame2_shift = np.roll(frame2, int(np.floor(-dxy[0])), 1)
+#    frame2_shift = np.roll(frame2_shift, int(np.floor(-dxy[1])), 0)
+#    tmp[:,:,2] = frame1
+#    tmp[:,:,1] = frame2_shift
+#    tmp[:,:,0] = 0
     return dx, dy
 
 
 
 for i in list(viewableList):
+    k = 0
     nextImg = next(iter(viewableList))
-    dx, dy = calcGFTTShift(i, nextImg)
-    print ('dx: ' + str(dx), 'dy: ' + str(dy))
+    dx, dy = calc_feature_shift(i, nextImg)
+    # assosiate timestamps to images
+    if k == 0:
+        timestamp = 1 #should be zero, but set as 1 to avoid devision by zero. temporary workaround.
+    else:
+        line = linecache.getline(imagePath + "/tstamps.csv", k+1) # fetch specific line from cached file, an efficient method.
+                                                                  # since k is 0-indexed and getline is 1-indexed, we must increment with k+1
+        timestamp = line.split(",")[0] # store whatever comes before comma in the specific line as timestamp. microsecond format
+#    print (timestamp)
+    dx = dx / (int(timestamp)) #converting from non-timebound relative motion to timebound (seconds) relative motion
+    xmax = max_filament_speed * (int(timestamp))
+    k += 1 
+    print ('\n \n \n dx: ' + str(dx) + '\n \n dy: ' + str(dy))
