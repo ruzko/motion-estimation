@@ -118,6 +118,11 @@ max_filament_speed = pixels_per_mm * max_filament_speed # px/s
 max_filament_speed = max_filament_speed / 1000000 # conversion to px/microsecond (px/s *s/1 000 000 us)
 
 
+# Instantiating stores for values
+velocity_list_x = []
+velocity_list_y = []
+orb_vel_list_x = []
+orb_vel_list_y = []
 
 
 def calc_feature_shift(currentFrame, nextFrame):
@@ -130,16 +135,13 @@ def calc_feature_shift(currentFrame, nextFrame):
     pts1 = cv.goodFeaturesToTrack(frame1, 600, 0.01, 10)
     pts2 = cv.goodFeaturesToTrack(frame2, 600, 0.01, 10)
     nextPts, status, err = cv.calcOpticalFlowPyrLK(frame1, frame2, pts1, pts2)
-#    print (status)
     pts1Good = pts1[ status==1 ]
     #pts1Good=np.reshape(pts1Good, (pts1Good.shape[0],1,pts1Good.shape[1]))
     nextPtsG = nextPts[ status==1 ]
     #nextPtsG=np.reshape(nextPtsG, (nextPtsG.shape[0],1,nextPtsG.shape[1]))
     matrixTransform, status = cv.estimateAffinePartial2D(pts1, nextPts)
     #T,msk=cv.findHomography(pts1Good, nextPtsG, cv.USAC_MAGSAC)
-    dx, dy = matrixTransform[0:2],matrixTransform[1:2]
-#    dy = matrixTransform[1:2]
-#    dxy = (dx,dy)
+    dx, dy = matrixTransform[0,2],matrixTransform[1,2] # get third element of first and second row
 #    tmp = np.zeros((frame1.shape[0], frame1.shape[1], 3), np.uint8)
 #    frame2_shift = np.roll(frame2, int(np.floor(-dxy[0])), 1)
 #    frame2_shift = np.roll(frame2_shift, int(np.floor(-dxy[1])), 0)
@@ -150,10 +152,67 @@ def calc_feature_shift(currentFrame, nextFrame):
 
 
 
+
+#breakpoint()
+def calc_ORB_shift(currentFrame, nextFrame):
+    # initialize ORB detector algo
+    orb = cv.ORB_create(nfeatures=500, edgeThreshold=3, patchSize=3)
+
+    # Read images
+    frame1 = cv.imread(currentFrame, 0)
+    frame2 = cv.imread(nextFrame, 0)
+
+    # Detect keypoints and compute descriptors for currentFrame and nextFrame
+    kpts1, descriptors1 = orb.detectAndCompute(frame1,None)
+    kpts2, descriptors2 = orb.detectAndCompute(frame2,None)
+
+    # initialize matcher for keypoints, then do matching
+    matcher = cv.BFMatcher.create(cv.NORM_HAMMING, crossCheck=True)
+    matches = matcher.match(descriptors1,descriptors2)
+
+    # Sort matches by score (distance)
+    matches = sorted(matches, key=lambda x:x.distance)
+    # Remove bad matches with worse than 15% match
+ #   numGoodMatches = int(len(matches) * 0.15
+ #   matches = matches[0:numGoodMatches]
+#    print (matches)
+#    readableMatches = map(str, matches)
+#    print(readableMatches)
+    # Extract location of good matches
+#    points1 = np.zeros((len(matches), 2), dtype=np.float32)
+#    points2 = np.zeros((len(matches), 2), dtype=np.float32)
+
+    src_pts  = np.float32([kpts1[m.queryIdx].pt for m in matches]).reshape(-1,1,2)
+    dst_pts  = np.float32([kpts2[m.trainIdx].pt for m in matches]).reshape(-1,1,2)
+#    for i, match in enumerate(matches):
+
+#        points1[i, :] = keypoints1[match.queryIdx].pt
+#        points2[i, :] = keypoints2[match.trainIdx].pt
+
+
+    matches = np.array(matches)
+    # Calculate shift / flow
+#    nextPts, status, err = cv.calcOpticalFlowPyrLK(frame1, frame2, kpts1, kpts2)
+    matrixTransform, status = cv.estimateAffinePartial2D(src_pts, dst_pts)
+
+    dx, dy = matrixTransform[0,2],matrixTransform[1,2] # get third element of first and second row
+    # combine to final image containing matched keypoints
+#    final_img = cv.drawMatches(query_img, queryKeypoints,
+#    train_img, trainKeypoints, matches[:20],None)
+# Draw first 10 matches.
+    img3 = cv.drawMatches(frame1,kpts1,frame2,kpts2,matches[:60],None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+    plt.imshow(img3),plt.show()
+
+    return dx, dy
+
+
+outInformation = []
+k = 0
+
 for i in list(viewableList):
-    k = 0
     nextImg = next(iter(viewableList))
     dx, dy = calc_feature_shift(i, nextImg)
+    odx, ody = calc_ORB_shift(i, nextImg)
     # assosiate timestamps to images
     if k == 0:
         timestamp = 1 #should be zero, but set as 1 to avoid devision by zero. temporary workaround.
@@ -162,7 +221,18 @@ for i in list(viewableList):
                                                                   # since k is 0-indexed and getline is 1-indexed, we must increment with k+1
         timestamp = line.split(",")[0] # store whatever comes before comma in the specific line as timestamp. microsecond format
 #    print (timestamp)
-    dx = dx / (int(timestamp)) #converting from non-timebound relative motion to timebound (seconds) relative motion
+    dx, dy = dx / (int(timestamp)), dy / (int(timestamp)) #converting from non-timebound relative motion to timebound (seconds) relative motion
     xmax = max_filament_speed * (int(timestamp))
-    k += 1 
-    print ('\n \n \n dx: ' + str(dx) + '\n \n dy: ' + str(dy))
+    k += 1
+    velocity_list_x.append(dx)
+    velocity_list_y.append(dy)
+    orb_vel_list_x.append(odx)
+    orb_vel_list_y.append(ody)
+
+# GFTT_shift
+print ('GFTT dx: \n', velocity_list_x, '\n GFTT dy: \n', velocity_list_y)
+
+
+# ORB_shift
+
+print ('ORB dx: \n', orb_vel_list_x, '\n ORB dy: \n', orb_vel_list_y)
