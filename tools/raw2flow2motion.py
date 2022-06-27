@@ -200,8 +200,8 @@ def calc_ORB_shift(currentFrame, nextFrame):
 #    final_img = cv.drawMatches(query_img, queryKeypoints,
 #    train_img, trainKeypoints, matches[:20],None)
 # Draw first 10 matches.
-    img3 = cv.drawMatches(frame1,kpts1,frame2,kpts2,matches[:60],None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
-    plt.imshow(img3),plt.show()
+ #   img3 = cv.drawMatches(frame1,kpts1,frame2,kpts2,matches[:60],None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+#    plt.imshow(img3),plt.show()
 
     return dx, dy
 
@@ -236,3 +236,31 @@ print ('GFTT dx: \n', velocity_list_x, '\n GFTT dy: \n', velocity_list_y)
 # ORB_shift
 
 print ('ORB dx: \n', orb_vel_list_x, '\n ORB dy: \n', orb_vel_list_y)
+
+
+plt.figure(figsize=(12,8))
+plt.plot(velocity_list_x, c='red')
+plt.xlabel('frame index', fontsize=12)
+plt.ylabel('lateral motion, GFTT', fontsize=12)
+plt.show()
+
+
+plt.figure(figsize=(12,8))
+plt.plot(velocity_list_y, c='green')
+plt.xlabel('frame index', fontsize=12)
+plt.ylabel('twisting motion, GFTT', fontsize=12)
+plt.show()
+
+
+plt.figure(figsize=(12,8))
+plt.plot(velocity_list_x, c='red')
+plt.xlabel('frame index', fontsize=12)
+plt.ylabel('lateral motion, ORB', fontsize=12)
+plt.show()
+
+
+plt.figure(figsize=(12,8))
+plt.plot(velocity_list_y, c='green')
+plt.xlabel('frame index', fontsize=12)
+plt.ylabel('twisting motion, ORB', fontsize=12)
+plt.show()
