@@ -3,6 +3,8 @@
 # This is free software, licenced under BSD-3-Clause
 #install dependencies: pip3 install numpy rawpy imageio matplotlib memory-profiler opencv-contrib-python
 
+from math import sqrt
+from PIL import Image, ImageEnhance
 import subprocess # to execute c-program "double"
 import linecache # to read long files line by line efficiently
 import random # to choose a random image from image range
@@ -73,7 +75,6 @@ headedList = [imagePath + '/hd.' + str(x) for x in list(rawList)]
 viewableList = []
 
 
-
 # Convert from raw to viewable format, stretch lines, denoise
 # Does denoising of the bayer format image before demosaicing
 def convertAndPostProcess():
@@ -96,6 +97,8 @@ def convertAndPostProcess():
         #    with grayList as grays: # denoise using neighbouring images as template
         #        cleanImage = cv.fastNlMeansDenoisingMulti(srcImgs=grayList, imgToDenoiseIndex=numberIndex, \
         #        temporalWindowSize=3, h=3, templateWindowSize=7, searchWindowSize=21)
+        # reduce resolution / downsample to remove noise
+#        cleanImage = cleanImage.resize(320, 32, Image.Resampling(1)) # LANCZOS
         imageio.imwrite(currentImage, cleanImage)
 #    frames = np.array(grayList)
     return nframes
@@ -103,13 +106,22 @@ def convertAndPostProcess():
 
 # get number of frames and list with viewable filenames, check dimensions
 nframes = convertAndPostProcess()
-random_frame = random.choice(viewableList)
-testFrame = cv.imread(random_frame, cv.IMREAD_GRAYSCALE)
-height, width = testFrame.shape
+
+
+
+def downsampling(img):
+    with Image.open(img) as big_img:
+        # increase contrast with a factor of 2.5
+        contrast_img = ImageEnhance.Contrast(big_img).enhance(2.5)
+        # reduce resolution / downsample to remove noise
+        small_img = contrast_img.resize((320, 32), Image.Resampling(1)) # LANCZOS algo
+        imageio.imwrite(img, small_img)
+    return
+
 
 
 # divide filelist into manageable chunks
-chunked_viewableList = [viewableList[i:i+chunk_size] for i in range(0, len(viewableList), chunk_size)]
+#chunked_viewableList = [viewableList[i:i+chunk_size] for i in range(0, len(viewableList), chunk_size)]
 
 # counting pixels
 max_filament_speed = 140 #mm/s
@@ -123,40 +135,68 @@ velocity_list_x = []
 velocity_list_y = []
 orb_vel_list_x = []
 orb_vel_list_y = []
+orb_beblid_vel_list_x = []
+orb_beblid_vel_list_y = []
 
 
-def calc_feature_shift(currentFrame, nextFrame):
-    # sanity checks
-#    if currentFrame == nextFrame:
-#        return None
+feature_params = dict ( qualityLevel = 0.3,
+                        minDistance = 7,
+                        blockSize = 7)
+
+maxCorners = 1000
+
+# detect first features and keypoints, and update when keypoints are lost
+def GFTT_detect(img1, n_good_kpts):
+    frame = cv.imread(img1, 0)
+    z = maxCorners - n_good_kpts
+    new_pts = cv.goodFeaturesToTrack(frame, z, **feature_params)
+    totalFeatures = len(new_pts)
+
+    return new_pts, totalFeatures
+
+def calc_feature_shift(currentFrame, nextFrame, old_kpts):
 
     frame1 = cv.imread(currentFrame, 0)
     frame2 = cv.imread(nextFrame, 0)
-    pts1 = cv.goodFeaturesToTrack(frame1, 600, 0.01, 10)
-    pts2 = cv.goodFeaturesToTrack(frame2, 600, 0.01, 10)
-    nextPts, status, err = cv.calcOpticalFlowPyrLK(frame1, frame2, pts1, pts2)
-    pts1Good = pts1[ status==1 ]
+#    pts1 = cv.goodFeaturesToTrack(frame1, maxCorners, **feature_params)
+    pts2 = cv.goodFeaturesToTrack(frame2, maxCorners, **feature_params)
+    nextPts, status, err = cv.calcOpticalFlowPyrLK(frame1, frame2, old_kpts, pts2)
+    pts1Good = old_kpts[ status==1 ]
     #pts1Good=np.reshape(pts1Good, (pts1Good.shape[0],1,pts1Good.shape[1]))
     nextPtsG = nextPts[ status==1 ]
+    num_good_kpts = len(nextPtsG)
     #nextPtsG=np.reshape(nextPtsG, (nextPtsG.shape[0],1,nextPtsG.shape[1]))
-    matrixTransform, status = cv.estimateAffinePartial2D(pts1, nextPts)
-    #T,msk=cv.findHomography(pts1Good, nextPtsG, cv.USAC_MAGSAC)
+    matrixTransform, status = cv.estimateAffinePartial2D(pts1Good, nextPtsG)
     dx, dy = matrixTransform[0,2],matrixTransform[1,2] # get third element of first and second row
-#    tmp = np.zeros((frame1.shape[0], frame1.shape[1], 3), np.uint8)
-#    frame2_shift = np.roll(frame2, int(np.floor(-dxy[0])), 1)
-#    frame2_shift = np.roll(frame2_shift, int(np.floor(-dxy[1])), 0)
-#    tmp[:,:,2] = frame1
-#    tmp[:,:,1] = frame2_shift
-#    tmp[:,:,0] = 0
-    return dx, dy
 
+    return dx, dy, num_good_kpts
+
+
+
+
+
+def ORB_detect(img1, num_good_pts):
+    # initialize ORB detector algo
+    orb = cv.ORB_create(nfeatures=2000, edgeThreshold=3, patchSize=5)
+
+    # Read images
+    frame1 = cv.imread(img1, 0)
+
+    # Detect keypoints and compute descriptors for currentFrame
+    kpts, descriptors = orb.detectAndCompute(frame1,None)
+
+    z = maxCorners - n_good_kpts
+    new_pts = cv.goodFeaturesToTrack(frame, z, **feature_params)
+    totalFeatures = len(new_pts)
+
+    return new_pts, totalFeatures
 
 
 
 #breakpoint()
 def calc_ORB_shift(currentFrame, nextFrame):
     # initialize ORB detector algo
-    orb = cv.ORB_create(nfeatures=500, edgeThreshold=3, patchSize=3)
+    orb = cv.ORB_create(nfeatures=2000, edgeThreshold=3, patchSize=5)
 
     # Read images
     frame1 = cv.imread(currentFrame, 0)
@@ -166,6 +206,10 @@ def calc_ORB_shift(currentFrame, nextFrame):
     kpts1, descriptors1 = orb.detectAndCompute(frame1,None)
     kpts2, descriptors2 = orb.detectAndCompute(frame2,None)
 
+#    kpts1Good = kpts1[ status==1 ]
+#    kpts1Good = kpts2[ status==1 ]
+
+
     # initialize matcher for keypoints, then do matching
     matcher = cv.BFMatcher.create(cv.NORM_HAMMING, crossCheck=True)
     matches = matcher.match(descriptors1,descriptors2)
@@ -173,7 +217,7 @@ def calc_ORB_shift(currentFrame, nextFrame):
     # Sort matches by score (distance)
     matches = sorted(matches, key=lambda x:x.distance)
     # Remove bad matches with worse than 15% match
- #   numGoodMatches = int(len(matches) * 0.15
+#    numGoodMatches = int(len(matches) * 0.15
  #   matches = matches[0:numGoodMatches]
 #    print (matches)
 #    readableMatches = map(str, matches)
@@ -200,19 +244,133 @@ def calc_ORB_shift(currentFrame, nextFrame):
 #    final_img = cv.drawMatches(query_img, queryKeypoints,
 #    train_img, trainKeypoints, matches[:20],None)
 # Draw first 10 matches.
- #   img3 = cv.drawMatches(frame1,kpts1,frame2,kpts2,matches[:60],None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+    img3 = cv.drawMatches(frame1,kpts1,frame2,kpts2,matches[:100],None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+    plt.imshow(img3),plt.show()
+
+    return dx, dy
+
+
+
+"""
+def ORB_shift_BEBLID(currentFrame, nextFrame):
+    # initialize ORB detector algo
+    detector = cv.ORB_create(nfeatures=2000, edgeThreshold=3, patchSize=5)
+
+    # Read images
+    frame1 = cv.imread(currentFrame, 0)
+    frame2 = cv.imread(nextFrame, 0)
+
+    # Detect keypoints and compute descriptors for currentFrame and nextFrame
+    kpts1 = detector.detect(frame1,None)
+    kpts2 = detector.detect(frame2,None)
+
+#    kpts1Good = kpts1[ status==1 ]
+#    kpts2Good = kpts2[ status==1 ]
+
+
+    # Compute descriptors for keypoints with improved BEBLID function
+    descriptor = cv.xfeatures2d.BEBLID_create(0.75)
+    kpts1, desc1 = descriptor.compute(frame1, kpts1)
+    kpts2, desc2 = descriptor.compute(frame2, kpts2)
+
+    # initialize matcher for keypoints, then do matching
+#    matcher = cv.BFMatcher.create(cv.NORM_HAMMING, crossCheck=True)
+#    matches = matcher.match(descriptors1,descriptors2)
+
+    # find homography
+#    homography = cv.estimateAffine2D(kpts1, kpts2)
+    homography, status = cv.findHomography(kpts1, kpts2)
+
+    matcher = cv.DescriptorMatcher_create(cv.DescriptorMatcher_BRUTEFORCE_HAMMING)
+    nn_matches = matcher.knnMatch(desc1, desc2, 2)
+    matched1 = []
+    matched2 = []
+    nn_match_ratio = 0.8  # Nearest neighbor matching ratio
+    for m, n in nn_matches:
+        if m.distance < nn_match_ratio * n.distance:
+            matched1.append(kpts1[m.queryIdx])
+            matched2.append(kpts2[m.trainIdx])
+
+    inliers1 = []
+    inliers2 = []
+    good_matches = []
+    inlier_threshold = 2.5  # Distance threshold to identify inliers with homography check
+    for i, m in enumerate(matched1):
+        # Create the homogeneous point
+        col = np.ones((3, 1), dtype=np.float64)
+        col[0:2, 0] = m.pt
+        # Project from image 1 to image 2
+        col = np.dot(homography, col)
+        col /= col[2, 0]
+        # Calculate euclidean distance
+        dist = sqrt(pow(col[0, 0] - matched2[i].pt[0], 2) + \
+                pow(col[1, 0] - matched2[i].pt[1], 2))
+        if dist < inlier_threshold:
+            good_matches.append(cv.DMatch(len(inliers1), len(inliers2), 0))
+            inliers1.append(matched1[i])
+            inliers2.append(matched2[i])
+
+
+
+
+    # Sort matches by score (distance)
+#    matches = sorted(matches, key=lambda x:x.distance)
+    # Remove bad matches with worse than 15% match
+#    numGoodMatches = int(len(matches) * 0.15
+ #   matches = matches[0:numGoodMatches]
+#    print (matches)
+#    readableMatches = map(str, matches)
+#    print(readableMatches)
+    # Extract location of good matches
+#    points1 = np.zeros((len(matches), 2), dtype=np.float32)
+#    points2 = np.zeros((len(matches), 2), dtype=np.float32)
+
+ #   src_pts  = np.float32([kpts1[m.queryIdx].pt for m in matches]).reshape(-1,1,2)
+ #   dst_pts  = np.float32([kpts2[m.trainIdx].pt for m in matches]).reshape(-1,1,2)
+#    for i, match in enumerate(matches):
+
+#        points1[i, :] = keypoints1[match.queryIdx].pt
+#        points2[i, :] = keypoints2[match.trainIdx].pt
+
+
+    matches = np.array(matches)
+    # Calculate shift / flow
+#    nextPts, status, err = cv.calcOpticalFlowPyrLK(frame1, frame2, kpts1, kpts2)
+    matrixTransform, status = cv.estimateAffinePartial2D(inliers1, inliers2)
+
+    dx, dy = matrixTransform[0,2],matrixTransform[1,2] # get third element of first and second row
+    # combine to final image containing matched keypoints
+#    final_img = cv.drawMatches(query_img, queryKeypoints,
+#    train_img, trainKeypoints, matches[:20],None)
+# Draw first 10 matches.
+
+#    img3 = cv.drawMatches(frame1,kpts1,frame2,kpts2,matches[:60],None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
 #    plt.imshow(img3),plt.show()
 
     return dx, dy
 
 
+
+
+"""
+
 outInformation = []
 k = 0
+tsList = []
+num_good_kpts = 0
 
 for i in list(viewableList):
+    # downsample image to reduce noise
+    downsampling(i)
+    # detect first keypoints and update if 20% of keypoints disappear
+    if k == 0 or num_good_kpts <= (num_kpts * 0.8):
+        kpts, num_kpts = GFTT_detect(i, num_good_kpts)
+
     nextImg = next(iter(viewableList))
-    dx, dy = calc_feature_shift(i, nextImg)
-    odx, ody = calc_ORB_shift(i, nextImg)
+    dx, dy, num_good_kpts = calc_feature_shift(i, nextImg, kpts)
+    orb_dx, orb_dy = calc_ORB_shift(i, nextImg)
+#    orb_beblid_dx, orb_beblid_dy = ORB_shift_BEBLID(i, nextImg)
+
     # assosiate timestamps to images
     if k == 0:
         timestamp = 1 #should be zero, but set as 1 to avoid devision by zero. temporary workaround.
@@ -220,14 +378,22 @@ for i in list(viewableList):
         line = linecache.getline(imagePath + "/tstamps.csv", k+1) # fetch specific line from cached file, an efficient method.
                                                                   # since k is 0-indexed and getline is 1-indexed, we must increment with k+1
         timestamp = line.split(",")[0] # store whatever comes before comma in the specific line as timestamp. microsecond format
+        tsList.append(timestamp)
 #    print (timestamp)
-    dx, dy = dx / (int(timestamp)), dy / (int(timestamp)) #converting from non-timebound relative motion to timebound (seconds) relative motion
+    vx, vy = dx / (int(timestamp)), dy / (int(timestamp)) #converting from non-timebound relative motion to timebound (seconds) relative motion
+    orb_vx, orb_vy = orb_dx / (int(timestamp)), orb_dy / (int(timestamp))
+#    orb_beblid_vx, orb_beblid_vy = orb_beblid_dx / (int(timestamp)), orb_beblid_dy / (int(timestamp))
+
     xmax = max_filament_speed * (int(timestamp))
+
     k += 1
-    velocity_list_x.append(dx)
-    velocity_list_y.append(dy)
-    orb_vel_list_x.append(odx)
-    orb_vel_list_y.append(ody)
+    velocity_list_x.append(vx)
+    velocity_list_y.append(vy)
+    orb_vel_list_x.append(orb_vx)
+    orb_vel_list_y.append(orb_vy)
+#    orb_beblid_vel_list_x.append(orb_beblid_vx)
+#    orb_beblid_vel_list_y.append(orb_beblid_vy)
+
 
 # GFTT_shift
 print ('GFTT dx: \n', velocity_list_x, '\n GFTT dy: \n', velocity_list_y)
@@ -238,29 +404,40 @@ print ('GFTT dx: \n', velocity_list_x, '\n GFTT dy: \n', velocity_list_y)
 print ('ORB dx: \n', orb_vel_list_x, '\n ORB dy: \n', orb_vel_list_y)
 
 
+
+# ORB_BEBLID_shift
+
+#print ('ORB + BEBLID vx: \n', orb_beblid_vel_list_x, '\n ORB + BEBLID vy: \n', orb_beblid_vel_list_y)
+
+
+
 plt.figure(figsize=(12,8))
 plt.plot(velocity_list_x, c='red')
-plt.xlabel('frame index', fontsize=12)
+plt.xlabel('timestamp us', fontsize=12)
 plt.ylabel('lateral motion, GFTT', fontsize=12)
+#plt.xticks(labels=tsList, rotation=45)
 plt.show()
 
 
 plt.figure(figsize=(12,8))
 plt.plot(velocity_list_y, c='green')
-plt.xlabel('frame index', fontsize=12)
+plt.xlabel('timestamp us', fontsize=12)
 plt.ylabel('twisting motion, GFTT', fontsize=12)
+#plt.xticks(x, tsList, rotation=45)
 plt.show()
 
 
 plt.figure(figsize=(12,8))
 plt.plot(velocity_list_x, c='red')
-plt.xlabel('frame index', fontsize=12)
+plt.xlabel('timestamp us', fontsize=12)
 plt.ylabel('lateral motion, ORB', fontsize=12)
+#plt.xticks(x, tsList, rotation=45)
 plt.show()
 
 
 plt.figure(figsize=(12,8))
 plt.plot(velocity_list_y, c='green')
-plt.xlabel('frame index', fontsize=12)
+plt.xlabel('timestamp us', fontsize=12)
 plt.ylabel('twisting motion, ORB', fontsize=12)
+#plt.xticks(x, tsList, rotation=45)
 plt.show()
