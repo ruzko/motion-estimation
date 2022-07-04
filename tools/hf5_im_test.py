@@ -4,6 +4,7 @@
 #install dependencies:
 # python3 -m pip install numpy rawpy imageio matplotlib opencv-contrib-python 
 
+import h5py
 from math import sqrt
 from PIL import Image, ImageEnhance
 import subprocess # to execute c-program "double"
@@ -66,15 +67,60 @@ def checkRawHeader ():
 
 # breaking list into chunks
 
-chunk_size = 10 #images held in memory at once
-chunked_rawList = [rawList[i:i+chunk_size] for i in range(0, len(rawList), chunk_size)]
-chunked_numberList = [numberList[i:i+chunk_size] for i in range(0, len(numberList), chunk_size)]
+chunk_size = 150 #images held in memory at once
 
+#numberList = [numberList[i:i+chunk_size] for i in range(0, len(numberList), chunk_size)]
+#breakpoint()
 
 # list with files which have a header
 headedList = [imagePath + '/hd.' + str(x) for x in list(rawList)]
-viewableList = []
-grayList= []
+#viewableList = []
+#grayList= []
+
+
+# open raw file, denoising of the bayer format image before demosaicing,
+# convert raw images to grayscale, save as efficient hdf5 format file
+with h5py.File(imagePath + '/images.h5', 'w') as f:
+    for n, x in enumerate(headedList):
+    # incoming data
+        with rawpy.imread(x) as raw:
+                rgb = raw.postprocess(
+                      fbdd_noise_reduction=rawpy.FBDDNoiseReductionMode.Full,
+                      no_auto_bright=False, output_bps=8)
+                grayframe = cv.cvtColor(rgb, cv.COLOR_BGR2GRAY)
+                img_array = np.array(grayframe)
+        total_rows = grayframe.shape[0]
+        total_columns = grayframe.shape[1]
+
+        # first file; create the dummy dataset with no max shape
+        if n == 0:
+            noisy_dataset = f.create_dataset("noisy_images", 
+                      shape=(len(numberList), total_rows, total_columns), 
+                      maxshape=(len(numberList), total_rows, total_columns),
+                      chunks = True, dtype='uint8')
+
+        # stack image array in 0-indexed position of third axis
+        f['noisy_images'][n,:,:]=img_array
+
+#set attributes for image dataset
+    noisy_dataset.attrs['CLASS'] = 'IMAGE'
+    noisy_dataset.attrs['IMAGE_VERSION'] = '1.2'
+    noisy_dataset.attrs['IMAGE_SUBCLASS'] =  'IMAGE_GRAYSCALE'
+    noisy_dataset.attrs['IMAGE_MINMAXRANGE'] = np.array([0,255], dtype=np.uint8)
+    noisy_dataset.attrs['IMAGE_WHITE_IS_ZERO'] =  0
+    # print attribute names and values
+    for k in f['noisy_images'].attrs.keys():
+        attr_value= f['noisy_images'].attrs[k]
+        print(k , attr_value)
+
+#breakpoint()
+
+
+
+
+
+
+
 
 # Convert from raw to viewable format, stretch lines, denoise
 # Does denoising of the bayer format image before demosaicing
@@ -86,25 +132,25 @@ def convertAndPostProcess():
         numberIndex = numberList.index(y)
         currentImage = (imagePath + '/img.'+ str(y) +'.tiff')
         viewableList.append(currentImage)
-        with rawpy.imread(x) as raw:
-            rgb = raw.postprocess(fbdd_noise_reduction=rawpy.FBDDNoiseReductionMode.Full, no_auto_bright=False, output_bps=8)
-            grayframe = cv.cvtColor(rgb, cv.COLOR_BGR2GRAY)
-            if needsDoubling == '-d':
-                subprocess.Popen(double, currentImage)
+
+
+        if needsDoubling == '-d':
+            subprocess.Popen(double, currentImage)
         if numberIndex < 5 or numberIndex > denoiseList: # denoise images individually
             cleanImage = cv.fastNlMeansDenoising(src=grayframe, \
                    h=3, templateWindowSize=7, searchWindowSize=21)
         else: # I want to use this better denoising method, but I couldn't get it to work
               # denoise using neighbouring images as template
-            cleanImage = cv.fastNlMeansDenoisingMulti(srcImgs=grayList, imgToDenoiseIndex=(numberIndex-3), \
-                temporalWindowSize=5, h=4, templateWindowSize=7, searchWindowSize=21)
+            cleanImage = cv.fastNlMeansDenoisingMulti(srcImgs=grayList, 
+                           imgToDenoiseIndex=(numberIndex-3), temporalWindowSize=5, 
+                           h=4, templateWindowSize=7, searchWindowSize=21)
         imageio.imwrite(currentImage, cleanImage)
         grayList.append(cleanImage)
     return nframes
 
 
 # get number of frames and list with viewable filenames, check dimensions
-nframes = convertAndPostProcess()
+#nframes = convertAndPostProcess()
 
 
 
@@ -116,6 +162,61 @@ def downsampling(img):
 #        small_img = contrast_img.resize((160, 24), Image.Resampling(1)) # LANCZOS algo
         imageio.imwrite(img, contrast_img)
     return
+
+
+
+
+numberIndex = []
+# open file read-write
+with h5py.File(imagePath + '/images.h5', 'r+') as f:
+    # load a slice containing n images from noisy dataset, as grayscale images using PIL
+    if len(numberList) >= chunk_size:
+        noisy_slice = f['noisy_images'][:chunksize]
+    else:
+        # get slice with all elements
+        noisy_slice = f['noisy_images'][:]
+
+    print(noisy_slice)
+    # iterate over slice's first axis to make images from individual layers
+    for z in noisy_slice:
+
+
+#        im = Image.fromarray(z, mode='L')
+        
+    # make a dataset to hold denoised images, so the images don't bleed out due to their
+    # denoised neighbours.
+#    if numberIndex < 5 or numberIndex > denoiseList: # denoise images individually
+        cleanImage = cv.fastNlMeansDenoising(src=z, \
+                   h=3, templateWindowSize=7, searchWindowSize=21)
+#    else: # I want to use this better denoising method, but I couldn't get it to work
+              # denoise using neighbouring images as template
+#    cleanImage = cv.fastNlMeansDenoisingMulti(srcImgs=noisy_slice,
+#                           imgToDenoiseIndex=(numberIndex-3), temporalWindowSize=5,
+#                           h=4, templateWindowSize=7, searchWindowSize=21)
+
+"""
+    # first file; create the dummy dataset with no max shape
+    if n == 0:
+        clean_dataset = f.create_dataset("clean_images",
+                      shape=(len(numberList), total_rows, total_columns),
+                      maxshape=(len(numberList), total_rows, total_columns),
+                      chunks = True, dtype='uint8')
+
+        # stack image array in 0-indexed position of third axis
+        f['clean_images'][n,:,:]=img_array
+
+#set attributes for image dataset
+    img_dataset.attrs['CLASS'] = 'IMAGE'
+    img_dataset.attrs['IMAGE_VERSION'] = '1.2'
+    img_dataset.attrs['IMAGE_SUBCLASS'] =  'IMAGE_GRAYSCALE'
+    img_dataset.attrs['IMAGE_MINMAXRANGE'] = np.array([0,255], dtype=np.uint8)
+    img_dataset.attrs['IMAGE_WHITE_IS_ZERO'] =  0
+
+
+"""
+
+
+"""
 
 
 
@@ -367,8 +468,8 @@ def ORB_shift_BEBLID(currentFrame, nextFrame):
 
 
 
-"""
 
+"""
 outInformation = []
 k = 0
 tsList = []
@@ -441,7 +542,7 @@ plt.ylabel('twisting motion, GFTT', fontsize=12)
 #plt.xticks(x, tsList, rotation=45)
 plt.show()
 
-"""
+
 plt.figure(figsize=(12,8))
 plt.plot(velocity_list_x, c='red')
 plt.xlabel('timestamp us', fontsize=12)
@@ -458,3 +559,4 @@ plt.ylabel('twisting motion, ORB', fontsize=12)
 plt.show()
 
 """
+
