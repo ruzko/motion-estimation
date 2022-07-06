@@ -320,7 +320,7 @@ FLANN_INDEX_KDTREE = 1
 FLANN_DIST_HAMMING = 9
 
 LSH_index_params= dict(algorithm = FLANN_INDEX_LSH,
-                   table_number = 36, # 12 or 6
+                   table_number = 30, # 12 or 6
                    key_size = 20,     # 20 or 12
                    multi_probe_level = 2,
                    target_precision = 95)
@@ -330,7 +330,7 @@ KDTREE_index_params= dict(algorithm = FLANN_INDEX_KDTREE,
                           target_precision = 99)
 
 
-search_params = dict(checks=300)   # or pass empty dictionary
+search_params = dict(checks=200)   # or pass empty dictionary
 
 ###    FLANN_DIST_EUCLIDEAN = 1,
 ###    FLANN_DIST_L2 = 1,
@@ -358,13 +358,12 @@ pydegensac_params = dict(px_th = 3.0,
 
 def calc_ORB_shift(prevFrame, curFrame):
     # initialize ORB detector algo
-    orb = cv.ORB_create(nfeatures=6000, edgeThreshold=5, patchSize=7)
+    orb = cv.ORB_create(nfeatures=6000, edgeThreshold=5, patchSize=17)
 
     # Detect keypoints and compute descriptors for currentFrame and nextFrame
     kpts1, descriptors1 = orb.detectAndCompute(prevFrame,None)
     kpts2, descriptors2 = orb.detectAndCompute(curFrame,None)
 
-#    flannMatcher = cv.DescriptorMatcher_create(cv.DescriptorMatcher_FLANNBASED)
     flannMatcher = cv.FlannBasedMatcher(KDTREE_index_params, search_params)
 
     # return k nearest neighbours
@@ -392,18 +391,19 @@ def calc_ORB_shift(prevFrame, curFrame):
         second[i,1] = kpts2[flann_goodmatches[i].trainIdx].pt[1]
 
     flann_matrixTransform, fstatus = cv.estimateAffinePartial2D(first, second, **estimate_affine_params)
-    degensac_homography = pydegensac.findHomography(first, second, **pydegensac_params)
+    degensac_homography, status = pydegensac.findHomography(first, second, **pydegensac_params)
+#    cv.decomposeHomography is needed to extract trabslation from degensac_homography
 
-    if flann_matrixTransform != None:
+    if flann_matrixTransform is not None:
         pdx, pdy = flann_matrixTransform[0,2],flann_matrixTransform[1,2] # get third #element of first and second row
 #        img3 = cv.drawMatches(prevFrame,kpts1,curFrame,kpts2,flann_goodmatches[:],
 #                          None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
 #        plt.imshow(img3),plt.show()
-    breakpoint()
+#    breakpoint()
 
 
-#    if degensac_homography != None:
-#        degpdx, degpdy = degensac_homography[0,2],degensac_homography[1,2] # get third #element of first and second row
+#    if degensac_homography is not None:
+    degpdx, degpdy = degensac_homography[0,2],degensac_homography[1,2] # get third #element of first and second row
 #        img4 = cv.drawMatches(prevFrame,kpts1,curFrame,kpts2,flann_goodmatches[:],
 #                          None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
 #        plt.imshow(img4),plt.show()
@@ -457,14 +457,14 @@ with h5py.File(imagePath + '/images.h5', 'r+') as f:
             tsList.append(timestamp)
 
 
-            pdx, pdy = calc_feature_shift(prevFrame, z)
-            mmdx, mmdy = pdx / pixels_per_mm, pdy / pixels_per_mm
+#            pdx, pdy = calc_feature_shift(prevFrame, z)
+#            mmdx, mmdy = pdx / pixels_per_mm, pdy / pixels_per_mm
 
             orb_pdx, orb_pdy = calc_ORB_shift(prevFrame, z)
             mm_orb_dx, mm_orb_dy = orb_pdx / pixels_per_mm, orb_pdy / pixels_per_mm
 
             #converting from non-timebound relative motion to timebound (seconds) relative motion
-            vx, vy = mmdx / timestamp, mmdy / timestamp
+#            vx, vy = mmdx / timestamp, mmdy / timestamp
             orb_vx, orb_vy = mm_orb_dx / timestamp, mm_orb_dy / timestamp
 
             xmax = max_filament_speed * timestamp # px/interval
@@ -474,8 +474,8 @@ with h5py.File(imagePath + '/images.h5', 'r+') as f:
 
 
 
-            velocity_list_x.append(pdx)
-            velocity_list_y.append(pdy)
+#            velocity_list_x.append(pdx)
+#            velocity_list_y.append(pdy)
             orb_vel_list_x.append(orb_vx)
             orb_vel_list_y.append(orb_vy)
 
