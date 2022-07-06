@@ -4,6 +4,7 @@
 #install dependencies:
 # python3 -m pip install numpy rawpy imageio matplotlib opencv-contrib-python h5py
 
+import pydegensac
 import h5py # to enable high-performance file handling
 from numba import jit, njit # to compile code for quicker execution
 import multiprocessing # to run multiple instances of time-consuming processes
@@ -75,7 +76,17 @@ chunk_size = 200 #images held in memory at once
 # list with files which have a header
 headedList = [imagePath + '/hd.' + str(x) for x in list(rawList)]
 
-denoiseNum = len(numberList) - 3
+denoiseNum = len(numberList)
+
+"""
+hf5_params = dict(shape=(len(numberList), total_rows, total_columns),
+                  maxshape=(len(numberList), total_rows, total_columns),
+                  chunks = True,
+                  dtype = 'uint8',
+                  chunks = (total_rows, total_columns))
+"""
+
+
 
 # open raw file, denoising of the bayer format image before demosaicing,
 # convert raw images to grayscale, save as efficient hdf5 format file
@@ -93,10 +104,11 @@ with h5py.File(imagePath + '/images.h5', 'w') as f:
 
         # first file; create the dummy dataset with no max shape
         if n == 0:
-            noisy_dataset = f.create_dataset("noisy_images", 
-                      shape=(len(numberList), total_rows, total_columns), 
-                      maxshape=(len(numberList), total_rows, total_columns),
-                      chunks = True, dtype='uint8', compression="lzf", shuffle=True)
+            noisy_dataset = f.create_dataset("noisy_images",
+                      shape = (len(numberList), total_rows, total_columns),
+                      maxshape =(len(numberList), total_rows, total_columns),
+                      chunks = True,
+                      dtype = 'uint8')#, compression="lzf", shuffle=True)
 
         # stack image array in 0-indexed position of third axis
         f['noisy_images'][n,:,:]=img_array
@@ -168,6 +180,7 @@ def denoising(arrays, numberIndex, num_frames_window):
 
 def denoise_hf5_parallel():
     numberIndex = 0
+    appendFrom = 0
     # open file read-write
     with h5py.File(imagePath + '/images.h5', 'r+') as f:
 
@@ -183,19 +196,21 @@ def denoise_hf5_parallel():
         # iterate over slice's first axis to make images from individual layers
         for z in noisy_slice:
 
+            # increase image contrast
+#            cleanImageArray = enhance_contrast(z)
 
 
             # denoise images
-            if (numberIndex <= 1) or (numberIndex >= denoiseNum):
+            if (numberIndex <= 1) or (numberIndex >= (denoiseNum - 2)):
                 # denoise two first and last images individually
                 cleanImageArray = cv.fastNlMeansDenoising(src=z,
                            h=3, templateWindowSize=7, searchWindowSize=21)
 
-            elif (numberIndex <= 3) or (numberIndex >= (denoiseNum - 2)):
+            elif (numberIndex <= 4) or (numberIndex >= (denoiseNum - 4)):
                 # denoise using some neighbouring images as template
                 cleanImageArray = denoising(noisy_slice, numberIndex, 5)
 
-            elif(numberIndex <= 6) or (numberIndex >= (denoiseNum - 4)):
+            elif(numberIndex <= 7) or (numberIndex >= (denoiseNum - 7)):
                 # denoise using more neighbouring images as template
                 cleanImageArray = denoising(noisy_slice, numberIndex, 9)
             else:
@@ -212,20 +227,29 @@ def denoise_hf5_parallel():
             # first file; create the dummy dataset with no max shape
             if numberIndex == 0:
                 clean_dataset = f.create_dataset("clean_images",
-                              shape=(len(numberList), total_rows,     total_columns),
-                              maxshape=(len(numberList), total_rows,     total_columns),
-                              chunks = True, dtype='uint8', compression="lzf", shuffle=True)
+                              shape = (len(numberList), total_rows, total_columns),
+                              maxshape = (len(numberList), total_rows, total_columns),
+                              chunks = True,
+                              dtype='uint8') #, compression="lzf", shuffle=True)
+#            breakpoint()
+#            if numberIndex >= chunk_size or numberIndex == denoiseNum - 1 :
+#                # stack image array in 0-indexed position of third axis
+#                clean_dataset.write_direct(cleanImageArrays, #np.s_[appendFrom:numberIndex], np.s_[appendFrom:numberIndex]) ##
+#                appendFrom = numberIndex + 1
+#                del cleanImageArrays
+#
+#            if "cleanImageArrays" not in locals():
+#                cleanImageArrays = np.array([])
+#            np.append(cleanImageArrays, cleanImageArray, axis=0)
 
-                # stack image array in 0-indexed position of third axis
             f['clean_images'][numberIndex,:,:]=cleanImageArray
-
             numberIndex += 1
 
     #set attributes for image dataset
         clean_dataset.attrs['CLASS'] = 'IMAGE'
         clean_dataset.attrs['IMAGE_VERSION'] = '1.2'
         clean_dataset.attrs['IMAGE_SUBCLASS'] =  'IMAGE_GRAYSCALE'
-        clean_dataset.attrs['IMAGE_MINMAXRANGE'] = np.array([0,255],     dtype=np.uint8)
+        clean_dataset.attrs['IMAGE_MINMAXRANGE'] = np.array([0,255], dtype=np.uint8)
         clean_dataset.attrs['IMAGE_WHITE_IS_ZERO'] =  0
 
 
@@ -245,11 +269,11 @@ LK_params = dict ( winSize = (21, 7),
                    maxLevel = 4)
                    
 
-estimate_affine_params = dict ( refineIters = 200,
+estimate_affine_params = dict ( refineIters = 400,
                                 method = cv.RANSAC,
-                                ransacReprojThreshold = 0.9,
+                                ransacReprojThreshold = 0.5,
                                 maxIters = 20000,
-                                confidence = 0.995)
+                                confidence = 0.998)
 
 maxCorners = 15000
 
@@ -296,17 +320,17 @@ FLANN_INDEX_KDTREE = 1
 FLANN_DIST_HAMMING = 9
 
 LSH_index_params= dict(algorithm = FLANN_INDEX_LSH,
-                   table_number = 30, # 12 or 6
+                   table_number = 36, # 12 or 6
                    key_size = 20,     # 20 or 12
                    multi_probe_level = 2,
                    target_precision = 95)
 
 KDTREE_index_params= dict(algorithm = FLANN_INDEX_KDTREE,
                           trees = 16,
-                          target_precision = 95)
+                          target_precision = 99)
 
 
-search_params = dict(checks=200)   # or pass empty dictionary
+search_params = dict(checks=300)   # or pass empty dictionary
 
 ###    FLANN_DIST_EUCLIDEAN = 1,
 ###    FLANN_DIST_L2 = 1,
@@ -323,9 +347,18 @@ search_params = dict(checks=200)   # or pass empty dictionary
 ###    FLANN_DIST_HAMMING          = 9,
 
 
+### pydegensac parameters
+pydegensac_params = dict(px_th = 3.0,
+                         conf = 0.995,
+                         max_iters = 2000,
+                         laf_consistensy_coef=0,
+                         error_type='sampson',
+                         symmetric_error_check=True)
+
+
 def calc_ORB_shift(prevFrame, curFrame):
     # initialize ORB detector algo
-    orb = cv.ORB_create(nfeatures=20000, edgeThreshold=3, patchSize=5)
+    orb = cv.ORB_create(nfeatures=6000, edgeThreshold=5, patchSize=7)
 
     # Detect keypoints and compute descriptors for currentFrame and nextFrame
     kpts1, descriptors1 = orb.detectAndCompute(prevFrame,None)
@@ -343,9 +376,11 @@ def calc_ORB_shift(prevFrame, curFrame):
     flann_goodmatches = []
     # ratio test as per Lowe's paper
     for (match1,match2) in (flann_matches):
-
         if match1.distance < 0.95 * match2.distance:
             flann_goodmatches.append(match1)
+
+
+
 
     first = np.empty((len(flann_goodmatches),2), dtype=np.float32)
     second = np.empty((len(flann_goodmatches),2), dtype=np.float32)
@@ -356,15 +391,24 @@ def calc_ORB_shift(prevFrame, curFrame):
         second[i,0] = kpts2[flann_goodmatches[i].trainIdx].pt[0]
         second[i,1] = kpts2[flann_goodmatches[i].trainIdx].pt[1]
 
-    flann_matrixTransform, fstatus = cv.estimateAffinePartial2D(first, second)
-    if flann_matrixTransform is not None:
+    flann_matrixTransform, fstatus = cv.estimateAffinePartial2D(first, second, **estimate_affine_params)
+    degensac_homography = pydegensac.findHomography(first, second, **pydegensac_params)
+
+    if flann_matrixTransform != None:
         pdx, pdy = flann_matrixTransform[0,2],flann_matrixTransform[1,2] # get third #element of first and second row
-        img3 = cv.drawMatches(prevFrame,kpts1,curFrame,kpts2,flann_goodmatches[:],
-                          None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
-        plt.imshow(img3),plt.show()
+#        img3 = cv.drawMatches(prevFrame,kpts1,curFrame,kpts2,flann_goodmatches[:],
+#                          None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+#        plt.imshow(img3),plt.show()
+    breakpoint()
 
 
-    return pdx, pdy
+#    if degensac_homography != None:
+#        degpdx, degpdy = degensac_homography[0,2],degensac_homography[1,2] # get third #element of first and second row
+#        img4 = cv.drawMatches(prevFrame,kpts1,curFrame,kpts2,flann_goodmatches[:],
+#                          None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+#        plt.imshow(img4),plt.show()
+
+    return pdx, pdy #, degpdx, degpdy
 
 
 
