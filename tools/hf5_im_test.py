@@ -1,12 +1,12 @@
-#!/bin/python3
-# Copyright Jacob Dybvald Ludvigsen, Christoph Rackwitz, 2022
+#!/bin/env python3
+# Copyright Jacob Dybvald Ludvigsen, 2022
 # This is free software, licenced under BSD-3-Clause
 #install dependencies:
-# python3 -m pip install numpy rawpy imageio matplotlib opencv-contrib-python 
+# python3 -m pip install numpy rawpy imageio matplotlib opencv-contrib-python h5py
 
-import h5py
-from math import sqrt
-from PIL import Image, ImageEnhance
+import h5py # to enable high-performance file handling
+from numba import jit, njit # to compile code for quicker execution
+import multiprocessing # to run multiple instances of time-consuming processes
 import subprocess # to execute c-program "double"
 import linecache # to read long files line by line efficiently
 import random # to choose a random image from image range
@@ -32,7 +32,7 @@ def retFileList():
     parser.add_argument('-p', '--path', nargs='?', type=Path, dest="srcDirectory", default='/dev/shm/', \
           help='which directory to read images from. Specify with "-p <path-to-folder>" or "--path <path-to-folder". Leave empty for /dev/shm/')
     parser.add_argument('-d', nargs='?', type=str, dest='doLineDoubling', action='store', \
-           help='optionally add "-d" if images were recorded with line skips, to stretch lines.') 
+           help='optionally add "-d" if images were recorded with line skips, to stretch lines.')
     args = parser.parse_args()
     srcDir = args.srcDirectory
     firstFrame, lastFrame = args.fileIndex
@@ -67,16 +67,15 @@ def checkRawHeader ():
 
 # breaking list into chunks
 
-chunk_size = 150 #images held in memory at once
+chunk_size = 200 #images held in memory at once
 
 #numberList = [numberList[i:i+chunk_size] for i in range(0, len(numberList), chunk_size)]
 #breakpoint()
 
 # list with files which have a header
 headedList = [imagePath + '/hd.' + str(x) for x in list(rawList)]
-#viewableList = []
-#grayList= []
 
+denoiseNum = len(numberList) - 3
 
 # open raw file, denoising of the bayer format image before demosaicing,
 # convert raw images to grayscale, save as efficient hdf5 format file
@@ -97,7 +96,7 @@ with h5py.File(imagePath + '/images.h5', 'w') as f:
             noisy_dataset = f.create_dataset("noisy_images", 
                       shape=(len(numberList), total_rows, total_columns), 
                       maxshape=(len(numberList), total_rows, total_columns),
-                      chunks = True, dtype='uint8')
+                      chunks = True, dtype='uint8', compression="lzf", shuffle=True)
 
         # stack image array in 0-indexed position of third axis
         f['noisy_images'][n,:,:]=img_array
@@ -116,129 +115,126 @@ with h5py.File(imagePath + '/images.h5', 'w') as f:
 #breakpoint()
 
 
-
-
-
-
-
-
 # Convert from raw to viewable format, stretch lines, denoise
 # Does denoising of the bayer format image before demosaicing
 def convertAndPostProcess():
-#    grayList = []
-    nframes = int(len(headedList))
-    denoiseList = (nframes - 5)
-    for (x,y) in zip(headedList, numberList):
-        numberIndex = numberList.index(y)
-        currentImage = (imagePath + '/img.'+ str(y) +'.tiff')
-        viewableList.append(currentImage)
 
-
-        if needsDoubling == '-d':
-            subprocess.Popen(double, currentImage)
-        if numberIndex < 5 or numberIndex > denoiseList: # denoise images individually
-            cleanImage = cv.fastNlMeansDenoising(src=grayframe, \
-                   h=3, templateWindowSize=7, searchWindowSize=21)
-        else: # I want to use this better denoising method, but I couldn't get it to work
-              # denoise using neighbouring images as template
-            cleanImage = cv.fastNlMeansDenoisingMulti(srcImgs=grayList, 
-                           imgToDenoiseIndex=(numberIndex-3), temporalWindowSize=5, 
-                           h=4, templateWindowSize=7, searchWindowSize=21)
-        imageio.imwrite(currentImage, cleanImage)
-        grayList.append(cleanImage)
-    return nframes
-
-
-# get number of frames and list with viewable filenames, check dimensions
-#nframes = convertAndPostProcess()
-
-
-
-def downsampling(img):
-    with Image.open(img) as big_img:
-        # increase contrast with a factor of 2.5
-        contrast_img = ImageEnhance.Contrast(big_img).enhance(2)
-        # reduce resolution / downsample to remove noise
-#        small_img = contrast_img.resize((160, 24), Image.Resampling(1)) # LANCZOS algo
-        imageio.imwrite(img, contrast_img)
-    return
+    if needsDoubling == '-d':
+        subprocess.Popen(double, currentImage)
 
 
 
 
-numberIndex = []
-# open file read-write
-with h5py.File(imagePath + '/images.h5', 'r+') as f:
-    # load a slice containing n images from noisy dataset, as grayscale images using PIL
-    if len(numberList) >= chunk_size:
-        noisy_slice = f['noisy_images'][:chunksize]
-    else:
-        # get slice with all elements
-        noisy_slice = f['noisy_images'][:]
+### Increase contrast by equalisizing histogram
+def enhance_contrast(image_matrix, bins=256): # https://gist.github.com/msameeruddin/8629aa0bf58521a22bb67ed0fea82fee
+    image_flattened = image_matrix.flatten()
+    image_hist = np.zeros(bins)
 
-    print(noisy_slice)
-    # iterate over slice's first axis to make images from individual layers
-    for z in noisy_slice:
+    # frequency count of each pixel
+    for pix in image_matrix:
+        image_hist[pix] += 1
 
+    # cumulative sum
+    cum_sum = np.cumsum(image_hist)
+    norm = (cum_sum - cum_sum.min()) * 255
+    # normalization of the pixel values
+    n_ = cum_sum.max() - cum_sum.min()
+    uniform_norm = norm / n_
+    uniform_norm = uniform_norm.astype('int')
 
-#        im = Image.fromarray(z, mode='L')
-        
-    # make a dataset to hold denoised images, so the images don't bleed out due to their
-    # denoised neighbours.
-#    if numberIndex < 5 or numberIndex > denoiseList: # denoise images individually
-        cleanImage = cv.fastNlMeansDenoising(src=z, \
-                   h=3, templateWindowSize=7, searchWindowSize=21)
-#    else: # I want to use this better denoising method, but I couldn't get it to work
-              # denoise using neighbouring images as template
-#    cleanImage = cv.fastNlMeansDenoisingMulti(srcImgs=noisy_slice,
-#                           imgToDenoiseIndex=(numberIndex-3), temporalWindowSize=5,
-#                           h=4, templateWindowSize=7, searchWindowSize=21)
+    # flat histogram
+    image_eq = uniform_norm[image_flattened]
+    # reshaping the flattened matrix to its original shape
+    image_eq = np.reshape(a=image_eq, newshape=image_matrix.shape)
 
-"""
-    # first file; create the dummy dataset with no max shape
-    if n == 0:
-        clean_dataset = f.create_dataset("clean_images",
-                      shape=(len(numberList), total_rows, total_columns),
-                      maxshape=(len(numberList), total_rows, total_columns),
-                      chunks = True, dtype='uint8')
-
-        # stack image array in 0-indexed position of third axis
-        f['clean_images'][n,:,:]=img_array
-
-#set attributes for image dataset
-    img_dataset.attrs['CLASS'] = 'IMAGE'
-    img_dataset.attrs['IMAGE_VERSION'] = '1.2'
-    img_dataset.attrs['IMAGE_SUBCLASS'] =  'IMAGE_GRAYSCALE'
-    img_dataset.attrs['IMAGE_MINMAXRANGE'] = np.array([0,255], dtype=np.uint8)
-    img_dataset.attrs['IMAGE_WHITE_IS_ZERO'] =  0
-
-
-"""
-
-
-"""
+    return image_eq
 
 
 
-# divide filelist into manageable chunks
-#chunked_viewableList = [viewableList[i:i+chunk_size] for i in range(0, len(viewableList), chunk_size)]
-
-# counting pixels
-max_filament_speed = 140 #mm/s
-pixels_per_mm = 611 # estimated by counting pixels between edges of known object
-max_filament_speed = pixels_per_mm * max_filament_speed # px/s
-max_filament_speed = max_filament_speed / 1000000 # conversion to px/microsecond (px/s *s/1 000 000 us)
 
 
-# Instantiating stores for values
-velocity_list_x = []
-velocity_list_y = []
-orb_vel_list_x = []
-orb_vel_list_y = []
-orb_beblid_vel_list_x = []
-orb_beblid_vel_list_y = []
-#inlier_vector = np.empty((2,32),dtype="double")
 
+
+#breakpoint()
+
+def denoising(arrays, numberIndex, num_frames_window):
+                      # denoise using some neighbouring images as template
+    cleanImageArray = cv.fastNlMeansDenoisingMulti(srcImgs=arrays,
+                        imgToDenoiseIndex=numberIndex,     temporalWindowSize=num_frames_window,
+                          h=4, templateWindowSize=7,     searchWindowSize=21)
+    return cleanImageArray
+
+
+
+def denoise_hf5_parallel():
+    numberIndex = 0
+    # open file read-write
+    with h5py.File(imagePath + '/images.h5', 'r+') as f:
+
+        # load a slice containing n images from noisy dataset
+        if len(numberList) >= chunk_size:
+            noisy_slice = f['noisy_images'][:] #[:chunksize]
+        else:
+            # get slice with all elements.
+            noisy_slice = f['noisy_images'][:]
+
+
+        print(noisy_slice)
+        # iterate over slice's first axis to make images from individual layers
+        for z in noisy_slice:
+
+
+
+            # denoise images
+            if (numberIndex <= 1) or (numberIndex >= denoiseNum):
+                # denoise two first and last images individually
+                cleanImageArray = cv.fastNlMeansDenoising(src=z,
+                           h=3, templateWindowSize=7, searchWindowSize=21)
+
+            elif (numberIndex <= 3) or (numberIndex >= (denoiseNum - 2)):
+                # denoise using some neighbouring images as template
+                cleanImageArray = denoising(noisy_slice, numberIndex, 5)
+
+            elif(numberIndex <= 6) or (numberIndex >= (denoiseNum - 4)):
+                # denoise using more neighbouring images as template
+                cleanImageArray = denoising(noisy_slice, numberIndex, 9)
+            else:
+                # denoise using more neighbouring images as template
+                cleanImageArray = denoising(noisy_slice, numberIndex, 13)
+
+
+            # increase image contrast
+            cleanImageArray = enhance_contrast(cleanImageArray)
+
+
+            # make a dataset to hold denoised images, so the images don't bleed     out due to their
+            # denoised neighbours.
+            # first file; create the dummy dataset with no max shape
+            if numberIndex == 0:
+                clean_dataset = f.create_dataset("clean_images",
+                              shape=(len(numberList), total_rows,     total_columns),
+                              maxshape=(len(numberList), total_rows,     total_columns),
+                              chunks = True, dtype='uint8', compression="lzf", shuffle=True)
+
+                # stack image array in 0-indexed position of third axis
+            f['clean_images'][numberIndex,:,:]=cleanImageArray
+
+            numberIndex += 1
+
+    #set attributes for image dataset
+        clean_dataset.attrs['CLASS'] = 'IMAGE'
+        clean_dataset.attrs['IMAGE_VERSION'] = '1.2'
+        clean_dataset.attrs['IMAGE_SUBCLASS'] =  'IMAGE_GRAYSCALE'
+        clean_dataset.attrs['IMAGE_MINMAXRANGE'] = np.array([0,255],     dtype=np.uint8)
+        clean_dataset.attrs['IMAGE_WHITE_IS_ZERO'] =  0
+
+
+
+
+
+
+
+### dicts for calc_feature_shift
 feature_params = dict ( qualityLevel = 0.1,
                         minDistance = 2,
                         useHarrisDetector = True,
@@ -256,30 +252,21 @@ estimate_affine_params = dict ( refineIters = 200,
                                 confidence = 0.995)
 
 maxCorners = 15000
-"""
-# detect first features and keypoints, and update when keypoints are lost
-def GFTT_detect(img1, n_good_kpts):
-    frame = cv.imread(img1, 0)
-    z = maxCorners # - n_good_kpts
-    new_pts = cv.goodFeaturesToTrack(frame, z, **feature_params)
-    totalFeatures = len(new_pts)
 
-    return new_pts, totalFeatures
-"""
-def calc_feature_shift(currentFrame, nextFrame):
 
-    frame1 = cv.imread(currentFrame, 0)
-    frame2 = cv.imread(nextFrame, 0)
-    pts1 = cv.goodFeaturesToTrack(frame1, maxCorners, **feature_params)
-    pts2 = cv.goodFeaturesToTrack(frame2, maxCorners, **feature_params)
-    nextPts, status, err = cv.calcOpticalFlowPyrLK(frame1, frame2, pts1, pts2, **LK_params)
+
+def calc_feature_shift(prevFrame, curFrame):
+
+    pts1 = cv.goodFeaturesToTrack(prevFrame, maxCorners, **feature_params)
+    pts2 = cv.goodFeaturesToTrack(curFrame, maxCorners, **feature_params)
+    nextPts, status, err = cv.calcOpticalFlowPyrLK(prevFrame, curFrame, pts1, pts2, **LK_params)
     pts1Good = pts1[ status==1 ]
-    #pts1Good=np.reshape(pts1Good, (pts1Good.shape[0],1,pts1Good.shape[1]))
+    pts1Good=np.reshape(pts1Good, (pts1Good.shape[0],1,pts1Good.shape[1]))
     nextPtsG = nextPts[ status==1 ]
 #    num_good_kpts = len(nextPtsG)
-#    nextPtsG=np.reshape(nextPtsG, (nextPtsG.shape[0],1,nextPtsG.shape[1]))
+    nextPtsG=np.reshape(nextPtsG, (nextPtsG.shape[0],1,nextPtsG.shape[1]))
     matrixTransform, status = cv.estimateAffinePartial2D(pts1Good, nextPtsG, **estimate_affine_params)
-    print(status)
+#    print(status)
     if matrixTransform is not None:
         dx, dy = matrixTransform[0,2],matrixTransform[1,2] # get third element of first and second row
     else:
@@ -289,235 +276,193 @@ def calc_feature_shift(currentFrame, nextFrame):
 
 
 
+### dicts for calc_ORB_shift
+
+# FLANN parameters
+
+###    FLANN_INDEX_LINEAR = 0,
+###    FLANN_INDEX_KDTREE = 1,
+###    FLANN_INDEX_KMEANS = 2,
+###    FLANN_INDEX_COMPOSITE = 3,
+###    FLANN_INDEX_KDTREE_SINGLE = 4,
+###    FLANN_INDEX_HIERARCHICAL = 5,
+###    FLANN_INDEX_LSH = 6,
+###    FLANN_INDEX_SAVED = 254,
+###    FLANN_INDEX_AUTOTUNED = 255,
+
+FLANN_INDEX_LSH = 6
+FLANN_INDEX_AUTOTUNED = 255
+FLANN_INDEX_KDTREE = 1
+FLANN_DIST_HAMMING = 9
+
+LSH_index_params= dict(algorithm = FLANN_INDEX_LSH,
+                   table_number = 30, # 12 or 6
+                   key_size = 20,     # 20 or 12
+                   multi_probe_level = 2,
+                   target_precision = 95)
+
+KDTREE_index_params= dict(algorithm = FLANN_INDEX_KDTREE,
+                          trees = 16,
+                          target_precision = 95)
 
 
-def ORB_detect(img1, num_good_pts):
+search_params = dict(checks=200)   # or pass empty dictionary
+
+###    FLANN_DIST_EUCLIDEAN = 1,
+###    FLANN_DIST_L2 = 1,
+###    FLANN_DIST_MANHATTAN = 2,
+###    FLANN_DIST_L1 = 2,
+###    FLANN_DIST_MINKOWSKI = 3,
+###    FLANN_DIST_MAX   = 4,
+###    FLANN_DIST_HIST_INTERSECT   = 5,
+###    FLANN_DIST_HELLINGER = 6,
+###    FLANN_DIST_CHI_SQUARE = 7,
+###    FLANN_DIST_CS         = 7,
+###    FLANN_DIST_KULLBACK_LEIBLER  = 8,
+###    FLANN_DIST_KL                = 8,
+###    FLANN_DIST_HAMMING          = 9,
+
+
+def calc_ORB_shift(prevFrame, curFrame):
     # initialize ORB detector algo
-    orb = cv.ORB_create(nfeatures=2000, edgeThreshold=3, patchSize=5)
-
-    # Read images
-    frame1 = cv.imread(img1, 0)
-
-    # Detect keypoints and compute descriptors for currentFrame
-    kpts, descriptors = orb.detectAndCompute(frame1,None)
-
-    z = maxCorners # - n_good_kpts
-    new_pts = cv.goodFeaturesToTrack(frame, z, **feature_params)
-    totalFeatures = len(new_pts)
-
-    return new_pts, totalFeatures
-
-
-
-#breakpoint()
-def calc_ORB_shift(currentFrame, nextFrame):
-    # initialize ORB detector algo
-    orb = cv.ORB_create(nfeatures=2000, edgeThreshold=3, patchSize=5)
-
-    # Read images
-    frame1 = cv.imread(currentFrame, 0)
-    frame2 = cv.imread(nextFrame, 0)
+    orb = cv.ORB_create(nfeatures=20000, edgeThreshold=3, patchSize=5)
 
     # Detect keypoints and compute descriptors for currentFrame and nextFrame
-    kpts1, descriptors1 = orb.detectAndCompute(frame1,None)
-    kpts2, descriptors2 = orb.detectAndCompute(frame2,None)
+    kpts1, descriptors1 = orb.detectAndCompute(prevFrame,None)
+    kpts2, descriptors2 = orb.detectAndCompute(curFrame,None)
 
-#    kpts1Good = kpts1[ status==1 ]
-#    kpts1Good = kpts2[ status==1 ]
+#    flannMatcher = cv.DescriptorMatcher_create(cv.DescriptorMatcher_FLANNBASED)
+    flannMatcher = cv.FlannBasedMatcher(KDTREE_index_params, search_params)
+
+    # return k nearest neighbours
+    flann_matches = flannMatcher.knnMatch(np.asarray(descriptors1,np.float32),
+                                          np.asarray(descriptors2,np.float32), k=2)
+
+    # Need to draw only good matches, so create a mask
+
+    flann_goodmatches = []
+    # ratio test as per Lowe's paper
+    for (match1,match2) in (flann_matches):
+
+        if match1.distance < 0.95 * match2.distance:
+            flann_goodmatches.append(match1)
+
+    first = np.empty((len(flann_goodmatches),2), dtype=np.float32)
+    second = np.empty((len(flann_goodmatches),2), dtype=np.float32)
+    for i in range(len(flann_goodmatches)):
+        #-- Get the keypoints from the good matches
+        first[i,0] = kpts1[flann_goodmatches[i].queryIdx].pt[0]
+        first[i,1] = kpts1[flann_goodmatches[i].queryIdx].pt[1]
+        second[i,0] = kpts2[flann_goodmatches[i].trainIdx].pt[0]
+        second[i,1] = kpts2[flann_goodmatches[i].trainIdx].pt[1]
+
+    flann_matrixTransform, fstatus = cv.estimateAffinePartial2D(first, second)
+    if flann_matrixTransform is not None:
+        pdx, pdy = flann_matrixTransform[0,2],flann_matrixTransform[1,2] # get third #element of first and second row
+        img3 = cv.drawMatches(prevFrame,kpts1,curFrame,kpts2,flann_goodmatches[:],
+                          None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+        plt.imshow(img3),plt.show()
 
 
-    # initialize matcher for keypoints, then do matching
-    matcher = cv.BFMatcher.create(cv.NORM_HAMMING, crossCheck=True)
-    matches = matcher.match(descriptors1,descriptors2)
-
-    # Sort matches by score (distance)
-    matches = sorted(matches, key=lambda x:x.distance)
-    # Remove bad matches with worse than 15% match
-#    numGoodMatches = int(len(matches) * 0.15
-#    matches = matches[0:numGoodMatches]
-#    print (matches)
-#    readableMatches = map(str, matches)
-#    print(readableMatches)
-    # Extract location of good matches
-#    points1 = np.zeros((len(matches), 2), dtype=np.float32)
-#    points2 = np.zeros((len(matches), 2), dtype=np.float32)
-
-    src_pts  = np.float32([kpts1[m.queryIdx].pt for m in matches]).reshape(-1,1,2)
-    dst_pts  = np.float32([kpts2[m.trainIdx].pt for m in matches]).reshape(-1,1,2)
-#    for i, match in enumerate(matches):
-
-#        points1[i, :] = keypoints1[match.queryIdx].pt
-#        points2[i, :] = keypoints2[match.trainIdx].pt
-
-
-    matches = np.array(matches)
-    # Calculate shift / flow
-#    nextPts, status, err = cv.calcOpticalFlowPyrLK(frame1, frame2, kpts1, kpts2)
-    matrixTransform, status = cv.estimateAffinePartial2D(src_pts, dst_pts)
-
-    dx, dy = matrixTransform[0,2],matrixTransform[1,2] # get third element of first and second row
-    # combine to final image containing matched keypoints
-#    final_img = cv.drawMatches(query_img, queryKeypoints,
-#    train_img, trainKeypoints, matches[:20],None)
-# Draw first 10 matches.
-#    img3 = cv.drawMatches(frame1,kpts1,frame2,kpts2,matches[:100],None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
-#    plt.imshow(img3),plt.show()
-
-    return dx, dy
+    return pdx, pdy
 
 
 
-"""
-def ORB_shift_BEBLID(currentFrame, nextFrame):
-    # initialize ORB detector algo
-    detector = cv.ORB_create(nfeatures=2000, edgeThreshold=3, patchSize=5)
-
-    # Read images
-    frame1 = cv.imread(currentFrame, 0)
-    frame2 = cv.imread(nextFrame, 0)
-
-    # Detect keypoints and compute descriptors for currentFrame and nextFrame
-    kpts1 = detector.detect(frame1,None)
-    kpts2 = detector.detect(frame2,None)
-
-#    kpts1Good = kpts1[ status==1 ]
-#    kpts2Good = kpts2[ status==1 ]
+# counting pixels
+max_filament_speed = 140 #mm/s
+pixels_per_mm = 611 # estimated by counting pixels between edges of known object
+max_filament_speed = pixels_per_mm * max_filament_speed # px/s
 
 
-    # Compute descriptors for keypoints with improved BEBLID function
-    descriptor = cv.xfeatures2d.BEBLID_create(0.75)
-    kpts1, desc1 = descriptor.compute(frame1, kpts1)
-    kpts2, desc2 = descriptor.compute(frame2, kpts2)
-
-    # initialize matcher for keypoints, then do matching
-#    matcher = cv.BFMatcher.create(cv.NORM_HAMMING, crossCheck=True)
-#    matches = matcher.match(descriptors1,descriptors2)
-
-    # find homography
-#    homography = cv.estimateAffine2D(kpts1, kpts2)
-    homography, status = cv.findHomography(kpts1, kpts2)
-
-    matcher = cv.DescriptorMatcher_create(cv.DescriptorMatcher_BRUTEFORCE_HAMMING)
-    nn_matches = matcher.knnMatch(desc1, desc2, 2)
-    matched1 = []
-    matched2 = []
-    nn_match_ratio = 0.8  # Nearest neighbor matching ratio
-    for m, n in nn_matches:
-        if m.distance < nn_match_ratio * n.distance:
-            matched1.append(kpts1[m.queryIdx])
-            matched2.append(kpts2[m.trainIdx])
-
-    inliers1 = []
-    inliers2 = []
-    good_matches = []
-    inlier_threshold = 2.5  # Distance threshold to identify inliers with homography check
-    for i, m in enumerate(matched1):
-        # Create the homogeneous point
-        col = np.ones((3, 1), dtype=np.float64)
-        col[0:2, 0] = m.pt
-        # Project from image 1 to image 2
-        col = np.dot(homography, col)
-        col /= col[2, 0]
-        # Calculate euclidean distance
-        dist = sqrt(pow(col[0, 0] - matched2[i].pt[0], 2) + \
-                pow(col[1, 0] - matched2[i].pt[1], 2))
-        if dist < inlier_threshold:
-            good_matches.append(cv.DMatch(len(inliers1), len(inliers2), 0))
-            inliers1.append(matched1[i])
-            inliers2.append(matched2[i])
-
-
-
-
-    # Sort matches by score (distance)
-#    matches = sorted(matches, key=lambda x:x.distance)
-    # Remove bad matches with worse than 15% match
-#    numGoodMatches = int(len(matches) * 0.15
- #   matches = matches[0:numGoodMatches]
-#    print (matches)
-#    readableMatches = map(str, matches)
-#    print(readableMatches)
-    # Extract location of good matches
-#    points1 = np.zeros((len(matches), 2), dtype=np.float32)
-#    points2 = np.zeros((len(matches), 2), dtype=np.float32)
-
- #   src_pts  = np.float32([kpts1[m.queryIdx].pt for m in matches]).reshape(-1,1,2)
- #   dst_pts  = np.float32([kpts2[m.trainIdx].pt for m in matches]).reshape(-1,1,2)
-#    for i, match in enumerate(matches):
-
-#        points1[i, :] = keypoints1[match.queryIdx].pt
-#        points2[i, :] = keypoints2[match.trainIdx].pt
-
-
-    matches = np.array(matches)
-    # Calculate shift / flow
-#    nextPts, status, err = cv.calcOpticalFlowPyrLK(frame1, frame2, kpts1, kpts2)
-    matrixTransform, status = cv.estimateAffinePartial2D(inliers1, inliers2)
-
-    dx, dy = matrixTransform[0,2],matrixTransform[1,2] # get third element of first and second row
-    # combine to final image containing matched keypoints
-#    final_img = cv.drawMatches(query_img, queryKeypoints,
-#    train_img, trainKeypoints, matches[:20],None)
-# Draw first 10 matches.
-
-#    img3 = cv.drawMatches(frame1,kpts1,frame2,kpts2,matches[:60],None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
-#    plt.imshow(img3),plt.show()
-
-    return dx, dy
-
-
-
-
-
-"""
-outInformation = []
+# Instantiating stores for values
+velocity_list_x = []
+velocity_list_y = []
+orb_vel_list_x = []
+orb_vel_list_y = []
+old_orb_vx = 0
 k = 0
 tsList = []
-num_good_kpts = 0
 
-for i in list(viewableList):
-    # downsample image to reduce noise
-    downsampling(i)
-    # detect first keypoints and update if 20% of keypoints disappear
-#    if k == 0 or num_good_kpts <= (num_kpts * 0.8):
-#        kpts, num_kpts = GFTT_detect(i, num_good_kpts)
 
-    nextImg = next(iter(viewableList))
-    dx, dy = calc_feature_shift(i, nextImg)
-#    orb_dx, orb_dy = calc_ORB_shift(i, nextImg)
-#    orb_beblid_dx, orb_beblid_dy = ORB_shift_BEBLID(i, nextImg)
+denoise_hf5_parallel()
 
-    # assosiate timestamps to images
-    if k == 0:
-        timestamp = 1 #should be zero, but set as 1 to avoid devision by zero. temporary workaround.
+with h5py.File(imagePath + '/images.h5', 'r+') as f:
+    # load a slice containing n image arrays from clean dataset
+    if len(numberList) >= chunk_size:
+        clean_slice = f['clean_images'][:] #[:chunksize]
     else:
-        line = linecache.getline(imagePath + "/tstamps.csv", k+1) # fetch specific line from cached file, an efficient method.
-                                                                  # since k is 0-indexed and getline is 1-indexed, we must increment with k+1
-        timestamp = line.split(",")[0] # store whatever comes before comma in the specific line as timestamp. microsecond format
-        tsList.append(timestamp)
-#    print (timestamp)
-    vx, vy = dx / (int(timestamp)), dy / (int(timestamp)) #converting from non-timebound relative motion to timebound (seconds) relative motion
-#    orb_vx, orb_vy = orb_dx / (int(timestamp)), orb_dy / (int(timestamp))
-#    orb_beblid_vx, orb_beblid_vy = orb_beblid_dx / (int(timestamp)), orb_beblid_dy / (int(timestamp))
+        # get slice with all elements
+        clean_slice = f['clean_images'][:]
 
-    xmax = max_filament_speed * (int(timestamp))
+    print(clean_slice)
+    # iterate over slice's first axis to make images from individual layers
+    for z in clean_slice:
 
-    k += 1
-    velocity_list_x.append(vx)
-    velocity_list_y.append(vy)
-#    orb_vel_list_x.append(orb_vx)
-#    orb_vel_list_y.append(orb_vy)
-#    orb_beblid_vel_list_x.append(orb_beblid_vx)
-#    orb_beblid_vel_list_y.append(orb_beblid_vy)
+        if k == 0:
+            prevFrame = z
+            k += 1
+            continue # nothing to do with just the first image array
+        else:
+            # fetch specific line from cached file,an efficient method.
+            # since k is 0-indexed and getline is 1-indexed, we must increment with k+1
+            line = linecache.getline(imagePath + "/tstamps.csv", k+1)
+            # store whatever comes before comma in the specific line as timestamp. microsecond format
+            timestamp = line.split(",")[0]
+            timestamp = int(timestamp)/(10E+6)
+
+            tsList.append(timestamp)
+
+
+            pdx, pdy = calc_feature_shift(prevFrame, z)
+            mmdx, mmdy = pdx / pixels_per_mm, pdy / pixels_per_mm
+
+            orb_pdx, orb_pdy = calc_ORB_shift(prevFrame, z)
+            mm_orb_dx, mm_orb_dy = orb_pdx / pixels_per_mm, orb_pdy / pixels_per_mm
+
+            #converting from non-timebound relative motion to timebound (seconds) relative motion
+            vx, vy = mmdx / timestamp, mmdy / timestamp
+            orb_vx, orb_vy = mm_orb_dx / timestamp, mm_orb_dy / timestamp
+
+            xmax = max_filament_speed * timestamp # px/interval
+            print("xmax = ", xmax, " pixels for this image interval")
+
+
+
+
+
+            velocity_list_x.append(pdx)
+            velocity_list_y.append(pdy)
+            orb_vel_list_x.append(orb_vx)
+            orb_vel_list_y.append(orb_vy)
+
+            prevFrame = z
+            k += 1
+
+"""
+
+            if old_orb_vx != 0:
+                if np.abs(orb_vx) > 1.5 * old_orb_vx or np.abs(orb_vx) < 0.5 * old_orb_vx:
+                    orb_vx = old_orb_vx
+
+            if np.abs(orb_vx) > xmax:
+                orb_vx = old_orb_vx
+
+            old_orb_vx = orb_vx
+            print ('ORB vx: \n', orb_vx, '\n ORB vy: \n', orb_vy)
+
+
+"""
+
+
 
 
 # GFTT_shift
-print ('GFTT dx: \n', velocity_list_x, '\n GFTT dy: \n', velocity_list_y)
+#print ('GFTT dx: \n', velocity_list_x, '\n GFTT dy: \n', velocity_list_y)
 
 
 # ORB_shift
 
-#print ('ORB dx: \n', orb_vel_list_x, '\n ORB dy: \n', orb_vel_list_y)
+#print ('ORB vx: \n', orb_vel_list_x, '\n ORB vy: \n', orb_vel_list_y)
 
 
 
@@ -526,7 +471,7 @@ print ('GFTT dx: \n', velocity_list_x, '\n GFTT dy: \n', velocity_list_y)
 #print ('ORB + BEBLID vx: \n', orb_beblid_vel_list_x, '\n ORB + BEBLID vy: \n', orb_beblid_vel_list_y)
 
 
-
+"""
 plt.figure(figsize=(12,8))
 plt.plot(velocity_list_x, c='red')
 plt.xlabel('timestamp us', fontsize=12)
@@ -541,10 +486,10 @@ plt.xlabel('timestamp us', fontsize=12)
 plt.ylabel('twisting motion, GFTT', fontsize=12)
 #plt.xticks(x, tsList, rotation=45)
 plt.show()
-
+"""
 
 plt.figure(figsize=(12,8))
-plt.plot(velocity_list_x, c='red')
+plt.plot(orb_vel_list_x, c='red')
 plt.xlabel('timestamp us', fontsize=12)
 plt.ylabel('lateral motion, ORB', fontsize=12)
 #plt.xticks(x, tsList, rotation=45)
@@ -552,11 +497,24 @@ plt.show()
 
 
 plt.figure(figsize=(12,8))
-plt.plot(velocity_list_y, c='green')
+plt.plot(orb_vel_list_y, c='green')
 plt.xlabel('timestamp us', fontsize=12)
 plt.ylabel('twisting motion, ORB', fontsize=12)
 #plt.xticks(x, tsList, rotation=45)
 plt.show()
 
-"""
+# plt.figure(figsize=(12,8))
+# plt.plot(orb_beblid_vel_list_x, c='red')
+# plt.xlabel('timestamp us', fontsize=12)
+# plt.ylabel('lateral motion, ORB FLANN', fontsize=12)
+# #plt.xticks(x, tsList, rotation=45)
+# plt.show()
+#
+#
+# plt.figure(figsize=(12,8))
+# plt.plot(orb_beblid_vel_list_y, c='green')
+# plt.xlabel('timestamp us', fontsize=12)
+# plt.ylabel('twisting motion, ORB FLANN', fontsize=12)
+# #plt.xticks(x, tsList, rotation=45)
+# plt.show()
 
