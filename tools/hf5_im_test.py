@@ -165,14 +165,9 @@ def enhance_contrast(image_matrix, bins=256): # https://gist.github.com/msameeru
 
 
 
-
-
-
-
-#breakpoint()
-
+### Denoise image numberIndex by comparing with other images in num_frames_window
 def denoising(arrays, numberIndex, num_frames_window):
-                      # denoise using some neighbouring images as template
+
     cleanImageArray = cv.fastNlMeansDenoisingMulti(srcImgs=arrays,
                         imgToDenoiseIndex=numberIndex,     temporalWindowSize=num_frames_window,
                           h=4, templateWindowSize=7,     searchWindowSize=21)
@@ -180,12 +175,14 @@ def denoising(arrays, numberIndex, num_frames_window):
 
 
 
-def denoise_hf5_parallel():
+
+### Main function for denoising and contrast enhancing of image arrays
+def denoise_hf5():
     numberIndex = 0
-    # open file read-write
+    # open hdf5 file read-write
     with h5py.File(imagePath + '/images.h5', 'r+') as f:
 
-        # load a slice containing n images from noisy dataset
+        # load a slice containing n images from noisy dataset, not yet implemented
         if len(numberList) >= chunk_size:
             noisy_slice = f['noisy_images'][:] #[:chunksize]
         else:
@@ -194,11 +191,8 @@ def denoise_hf5_parallel():
 
 
         print(noisy_slice)
-        # iterate over slice's first axis to make images from individual layers
+        # iterate over slice's first axis to clean individual layered arrays
         for z in noisy_slice:
-
-            # increase image contrast
-#            cleanImageArray = enhance_contrast(z)
 
 
             # denoise images
@@ -229,6 +223,9 @@ def denoise_hf5_parallel():
             if numberIndex == 0:
                 clean_dataset = f.create_dataset("clean_images", **hf5_params) #, compression="lzf", shuffle=True)
 #            breakpoint()
+#
+
+#            # Work on a subportion of the images at a time, to conserve memory
 #            if numberIndex >= chunk_size or numberIndex == denoiseNum - 1 :
 #                # stack image array in 0-indexed position of third axis
 #                clean_dataset.write_direct(cleanImageArrays, #np.s_[appendFrom:numberIndex], np.s_[appendFrom:numberIndex]) ##
@@ -239,6 +236,8 @@ def denoise_hf5_parallel():
 #                cleanImageArrays = np.array([])
 #            np.append(cleanImageArrays, cleanImageArray, axis=0)
 
+            # layer the current array on top of previous array, write to file. Slow.
+            # Ideally, number of write processes should be minimized.
             f['clean_images'][numberIndex,:,:]=cleanImageArray
             numberIndex += 1
 
@@ -254,25 +253,28 @@ def denoise_hf5_parallel():
 
 
 
+### parameters for goodFeaturesToTrack
+feature_params = dict ( qualityLevel = 0.1, # the lowest factor of "quality" accepted as "good keypoint", relative to the highest-quality keypoint in the image.
+                        minDistance = 2, # minimum pixel distance between good keypoints
+                        useHarrisDetector = True, # older method
+                        k = 0.04, # harris parameter
+                        blockSize=21) # pixel sides of the block for searching
 
-### dicts for calc_feature_shift
-feature_params = dict ( qualityLevel = 0.1,
-                        minDistance = 2,
-                        useHarrisDetector = True,
-                        k = 0.04,
-                        blockSize=33)
+#
+maxCorners = 21000
 
-LK_params = dict ( winSize = (21, 7),
-                   maxLevel = 4)
+
+### parameters for Lukas-Kanade Optical Flow
+LK_params = dict ( winSize = (21, 7), # size of search box. width x height
+                   maxLevel = 4) # maximum number of upscalings of image/ winSize to search in
                    
-
-estimate_affine_params = dict ( refineIters = 400,
-                                method = cv.RANSAC,
-                                ransacReprojThreshold = 0.5,
+### parameters for estimateAffinePartial2D
+estimate_affine_params = dict ( refineIters = 400, # max number of refinement iterations after initial affine array estimation
+                                method = cv.RANSAC, # Either ransac or LMeDS
+                                ransacReprojThreshold = 0.01, # usually between 1 and 3
                                 maxIters = 20000,
                                 confidence = 0.998)
 
-maxCorners = 21000
 
 
 
@@ -297,7 +299,6 @@ def calc_feature_shift(prevFrame, curFrame):
 
 
 
-### dicts for calc_ORB_shift
 
 # FLANN parameters
 
@@ -353,6 +354,7 @@ pydegensac_params = dict( px_th = 4, # threshold
                           symmetric_error_check=True) # same as crossCheck
 
 
+### paramters for ORB feature detector and descriptor
 ORB_params = dict(nfeatures=10000, # Max number of keypoints detected.
                   edgeThreshold=4, # detecting keypoints along the edge of the image is unstable, therefore we ignore the 4 outermost pixel layers.
                   patchSize=7) # window within to search. Does not overlap at any scale.
@@ -366,12 +368,16 @@ HOG_params = dict(_winSize=(32,320), # height x width. winSize is the size of th
                   _nlevels=128) # max number of detection window increases. default 64
 
 
+Transform_ECC_params = dict(warpMatrix = np.eye(2, 3, dtype=np.float32), # preparing unity matrix for x- and y- axis
+                            motionType = cv.MOTION_TRANSLATION, # only motion in x- and y- axes
+                            criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 1000,  1E-20)) # max count and desired epsilon. Terminates when either is reached.
+                            #gaussFiltSize = 5)
+
+
 def calc_ORB_shift(prevFrame, curFrame):
     # initialize ORB detector algo
     orb = cv.ORB_create(**ORB_params)
 
-    # initialize Histogram-of-Oriented_gradients descriptor.
-#    hog = cv.HOGDescriptor(**HOG_params)
     # Detect keypoints and compute descriptors for currentFrame and nextFrame
     kpts1, descriptors1 = orb.detectAndCompute(prevFrame,None)
     kpts2, descriptors2 = orb.detectAndCompute(curFrame,None)
@@ -424,12 +430,26 @@ def calc_ORB_shift(prevFrame, curFrame):
         second[i,0] = kpts2[goodmatches[i].trainIdx].pt[0]
         second[i,1] = kpts2[goodmatches[i].trainIdx].pt[1]
 
-    flann_matrixTransform, fstatus = cv.estimateAffinePartial2D(first, second, **estimate_affine_params)
+    affine_transforms = []
+    kpt1 = np.empty((1,2), dtype=np.float32)
+    kpt2 = np.empty((1,2), dtype=np.float32)
+    for i in range(len(goodmatches)):
+        kpt1[0,0] = kpts1[goodmatches[i].queryIdx].pt[0]
+        kpt1[0,1] = kpts1[goodmatches[i].queryIdx].pt[1]
+        kpt2[0,0] = kpts2[goodmatches[i].trainIdx].pt[0]
+        kpt2[0,1] = kpts2[goodmatches[i].trainIdx].pt[1]
+        intermediate_affine, fstatus = cv.estimateAffinePartial2D(kpt1, kpt2, method=cv.LMEDS) # no RANSAC for only 2 input points
+        affine_transforms.append(intermediate_affine)
+
+        #print(intermediate_affine)
+
+
+   # flann_matrixTransform, fstatus = cv.estimateAffinePartial2D(first, second, **estimate_affine_params)
 #    degensac_homography, status = pydegensac.findHomography(first, second, **pydegensac_params)
 #    cv.decomposeHomography is needed to extract trabslation from degensac_homography
 
-    if flann_matrixTransform is not None:
-        pdx, pdy = flann_matrixTransform[0,2],flann_matrixTransform[1,2] # get third #element of first and second row
+    #if flann_matrixTransform is not None:
+    #    pdx, pdy = flann_matrixTransform[0,2],flann_matrixTransform[1,2] # get third #element of first and second row
 #        img3 = cv.drawMatches(prevFrame,kpts1,curFrame,kpts2,goodmatches[:],
 #                          None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
 #        plt.imshow(img3),plt.show()
@@ -441,6 +461,14 @@ def calc_ORB_shift(prevFrame, curFrame):
 #        img4 = cv.drawMatches(prevFrame,kpts1,curFrame,kpts2,flann_goodmatches[:],
 #                          None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
 #        plt.imshow(img4),plt.show()
+
+    computedECC, ECCTransform = cv.findTransformECC(prevFrame, curFrame, **Transform_ECC_params)
+
+#    computedECC = cv.computeECC(prevFrame, curFrame)
+    print("ECCTransform:  \n", ECCTransform)
+    pdx, pdy = ECCTransform[0,2],ECCTransform[1,2]
+#    print("computedECC:  \n", computedECC)
+
 
     return  pdx, pdy # pdx, pdy
 
@@ -462,7 +490,7 @@ k = 0
 tsList = []
 
 #breakpoint()
-denoise_hf5_parallel()
+denoise_hf5()
 
 with h5py.File(imagePath + '/images.h5', 'r') as f:
     # load a slice containing n image arrays from clean dataset
@@ -482,11 +510,9 @@ with h5py.File(imagePath + '/images.h5', 'r') as f:
             # fetch specific line from cached file,an efficient method.
             # since k is 0-indexed and getline is 1-indexed, we must increment with k+1
             line = linecache.getline(imagePath + "/tstamps.csv", k+1)
-            # store whatever comes before comma in the specific line as timestamp. microsecond format
-            timestamp = line.split(",")[0]
-            timestamp = int(timestamp)/(10E+6)
-
-            tsList.append(timestamp)
+            timestamp = line.split(",")[0] # store whatever comes before comma in the specific line as timestamp. microsecond format
+            timestamp = int(timestamp)/(10E+6) # convert from microsecond to second
+            tsList.append(timestamp) # append to list of timestamps
 
 
 #            pdx, pdy = calc_feature_shift(prevFrame, z)
@@ -500,7 +526,7 @@ with h5py.File(imagePath + '/images.h5', 'r') as f:
             orb_vx, orb_vy = mm_orb_dx / timestamp, mm_orb_dy / timestamp
 
             xmax = max_filament_speed * timestamp # px/interval
-            print("xmax = ", xmax, " pixels for this image interval")
+            #print("xmax = ", xmax, " pixels for this image interval")
 
 
 
