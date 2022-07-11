@@ -126,7 +126,7 @@ with h5py.File(imagePath + '/images.h5', 'w') as f:
         attr_value= f['noisy_images'].attrs[k]
         print(k , attr_value)
 
-#breakpoint()
+
 
 """
 # Convert from raw to viewable format, stretch lines, denoise
@@ -251,226 +251,21 @@ def denoise_hf5():
 
 
 
-
-
-### parameters for goodFeaturesToTrack
-feature_params = dict ( qualityLevel = 0.1, # the lowest factor of "quality" accepted as "good keypoint", relative to the highest-quality keypoint in the image.
-                        minDistance = 2, # minimum pixel distance between good keypoints
-                        useHarrisDetector = True, # older method
-                        k = 0.04, # harris parameter
-                        blockSize=21) # pixel sides of the block for searching
-
-#
-maxCorners = 21000
-
-
-### parameters for Lukas-Kanade Optical Flow
-LK_params = dict ( winSize = (21, 7), # size of search box. width x height
-                   maxLevel = 4) # maximum number of upscalings of image/ winSize to search in
-                   
-### parameters for estimateAffinePartial2D
-estimate_affine_params = dict ( refineIters = 400, # max number of refinement iterations after initial affine array estimation
-                                method = cv.RANSAC, # Either ransac or LMeDS
-                                ransacReprojThreshold = 0.01, # usually between 1 and 3
-                                maxIters = 20000,
-                                confidence = 0.998)
-
-
-
-
-def calc_feature_shift(prevFrame, curFrame):
-
-    pts1 = cv.goodFeaturesToTrack(prevFrame, maxCorners, **feature_params)
-    pts2 = cv.goodFeaturesToTrack(curFrame, maxCorners, **feature_params)
-    nextPts, status, err = cv.calcOpticalFlowPyrLK(prevFrame, curFrame, pts1, pts2, **LK_params)
-    pts1Good = pts1[ status==1 ]
-    pts1Good=np.reshape(pts1Good, (pts1Good.shape[0],1,pts1Good.shape[1]))
-    nextPtsG = nextPts[ status==1 ]
-#    num_good_kpts = len(nextPtsG)
-    nextPtsG=np.reshape(nextPtsG, (nextPtsG.shape[0],1,nextPtsG.shape[1]))
-    matrixTransform, status = cv.estimateAffinePartial2D(pts1Good, nextPtsG, **estimate_affine_params)
-#    print(status)
-    if matrixTransform is not None:
-        dx, dy = matrixTransform[0,2],matrixTransform[1,2] # get third element of first and second row
-    else:
-        print("No good points to track")
-        dx, dy = (0, 0)
-    return dx, dy #, num_good_kpts
-
-
-
-
-# FLANN parameters
-
-###    FLANN_INDEX_LINEAR = 0,
-###    FLANN_INDEX_KDTREE = 1,
-###    FLANN_INDEX_KMEANS = 2,
-###    FLANN_INDEX_COMPOSITE = 3,
-###    FLANN_INDEX_KDTREE_SINGLE = 4,
-###    FLANN_INDEX_HIERARCHICAL = 5,
-###    FLANN_INDEX_LSH = 6,
-###    FLANN_INDEX_SAVED = 254,
-###    FLANN_INDEX_AUTOTUNED = 255,
-
-FLANN_INDEX_LSH = 6
-FLANN_INDEX_AUTOTUNED = 255
-FLANN_INDEX_KDTREE = 1
-FLANN_DIST_HAMMING = 9
-
-LSH_index_params = dict(algorithm = FLANN_INDEX_LSH,
-                        table_number = 12, # 12 or 6
-                        key_size = 20,     # 20 or 12
-                        multi_probe_level = 1,
-                        target_precision = 95)
-
-KDTREE_index_params = dict(algorithm = FLANN_INDEX_KDTREE,
-                           trees = 16,
-                           target_precision = 99)
-
-
-search_params = dict(checks=100)   # or pass empty dictionary
-
-###    FLANN_DIST_EUCLIDEAN = 1,
-###    FLANN_DIST_L2 = 1,
-###    FLANN_DIST_MANHATTAN = 2,
-###    FLANN_DIST_L1 = 2,
-###    FLANN_DIST_MINKOWSKI = 3,
-###    FLANN_DIST_MAX   = 4,
-###    FLANN_DIST_HIST_INTERSECT   = 5,
-###    FLANN_DIST_HELLINGER = 6,
-###    FLANN_DIST_CHI_SQUARE = 7,
-###    FLANN_DIST_CS         = 7,
-###    FLANN_DIST_KULLBACK_LEIBLER  = 8,
-###    FLANN_DIST_KL                = 8,
-###    FLANN_DIST_HAMMING          = 9,
-
-
-### pydegensac parameters
-pydegensac_params = dict( px_th = 4, # threshold
-                          conf = 0.995,
-                          max_iters = 2000, #
-                          laf_consistensy_coef=0, # check patch for consistency after. Needs special input
-                          error_type='sampson',
-                          symmetric_error_check=True) # same as crossCheck
-
-
-### paramters for ORB feature detector and descriptor
-ORB_params = dict(nfeatures=10000, # Max number of keypoints detected.
-                  edgeThreshold=4, # detecting keypoints along the edge of the image is unstable, therefore we ignore the 4 outermost pixel layers.
-                  patchSize=7) # window within to search. Does not overlap at any scale.
-#                  WTA_K=4) # number of matches produced for each keypoint. default is 2
-
-
-HOG_params = dict(_winSize=(32,320), # height x width. winSize is the size of the image cropped to an multiple of the cell size
-                  _blockSize=(8,8), # multiple of cellsize
-                  _blockStride=(8,8), # equal to blocksize
-                  _nbins=9, #
-                  _nlevels=128) # max number of detection window increases. default 64
-
-
 Transform_ECC_params = dict(warpMatrix = np.eye(2, 3, dtype=np.float32), # preparing unity matrix for x- and y- axis
                             motionType = cv.MOTION_TRANSLATION, # only motion in x- and y- axes
-                            criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 1000,  1E-20)) # max count and desired epsilon. Terminates when either is reached.
+                            criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10000,  1E-10)) # max iteration count and desired epsilon. Terminates when either is reached.
                             #gaussFiltSize = 5)
 
 
-def calc_ORB_shift(prevFrame, curFrame):
-    # initialize ORB detector algo
-    orb = cv.ORB_create(**ORB_params)
-
-    # Detect keypoints and compute descriptors for currentFrame and nextFrame
-    kpts1, descriptors1 = orb.detectAndCompute(prevFrame,None)
-    kpts2, descriptors2 = orb.detectAndCompute(curFrame,None)
-#    breakpoint()
-    flannMatcher = cv.FlannBasedMatcher(KDTREE_index_params, search_params)
-
-    # return k nearest neighbours
-    flann_matches = flannMatcher.knnMatch(np.asarray(descriptors1, dtype=np.float32),
-                                          np.asarray(descriptors2, dtype=np.float32), k=2)
-
-#    goodmatches = flannMatcher.knnMatch(np.asarray(descriptors1, dtype=np.uint8),
-#                                          np.asarray(descriptors2, dtype=np.uint8), k=2)
-
-#    flann_matches = flannMatcher.knnMatch(descriptors1,
-#                                         descriptors2, k=2)
-    # create BFMatcher object
-#    bf = cv.BFMatcher(cv.NORM_HAMMING2, crossCheck=True) # HAMMING2 when WTA_K is 3 or 4
-
-    # Match descriptors.
-#    bfmatches = bf.match(descriptors1, descriptors2)
-#    bfmatches = np.asarray(bfmatches, dtype=np.uint8)
-    # Need to draw only good matches, so create a mask
-#    breakpoint()
-
-    # Sort them in the order of their distance.
-#    bfmatches = sorted(bfmatches, key = lambda x:x.distance)
-
-    goodmatches = []
-    # ratio test as per Lowe's paper
-    for (m,n) in (flann_matches):
-        if m.distance < 0.95 * n.distance:
-            goodmatches.append(m)
-
-    first = np.empty((len(goodmatches),2), dtype=np.uint8)
-    second = np.empty((len(goodmatches),2), dtype=np.uint8)
-#    for i in range(len(goodmatches)):
-#        #-- Get the keypoints from the good matches
-#        first[i,0] = kpts1[bfmatches[i].queryIdx].pt[0]
-#        first[i,1] = kpts1[bfmatches[i].queryIdx].pt[1]
-#        second[i,0] = kpts2[bfmatches[i].trainIdx].pt[0]
-#        second[i,1] = kpts2[bfmatches[i].trainIdx].pt[1]
-
-
-#    first = np.empty((len(flann_goodmatches),2), dtype=np.float32)
-#    second = np.empty((len(flann_goodmatches),2), dtype=np.float32)
-    for i in range(len(goodmatches)):
-        #-- Get the keypoints from the good matches
-        first[i,0] = kpts1[goodmatches[i].queryIdx].pt[0]
-        first[i,1] = kpts1[goodmatches[i].queryIdx].pt[1]
-        second[i,0] = kpts2[goodmatches[i].trainIdx].pt[0]
-        second[i,1] = kpts2[goodmatches[i].trainIdx].pt[1]
-
-    affine_transforms = []
-    kpt1 = np.empty((1,2), dtype=np.float32)
-    kpt2 = np.empty((1,2), dtype=np.float32)
-    for i in range(len(goodmatches)):
-        kpt1[0,0] = kpts1[goodmatches[i].queryIdx].pt[0]
-        kpt1[0,1] = kpts1[goodmatches[i].queryIdx].pt[1]
-        kpt2[0,0] = kpts2[goodmatches[i].trainIdx].pt[0]
-        kpt2[0,1] = kpts2[goodmatches[i].trainIdx].pt[1]
-        intermediate_affine, fstatus = cv.estimateAffinePartial2D(kpt1, kpt2, method=cv.LMEDS) # no RANSAC for only 2 input points
-        affine_transforms.append(intermediate_affine)
-
-        #print(intermediate_affine)
-
-
-   # flann_matrixTransform, fstatus = cv.estimateAffinePartial2D(first, second, **estimate_affine_params)
-#    degensac_homography, status = pydegensac.findHomography(first, second, **pydegensac_params)
-#    cv.decomposeHomography is needed to extract trabslation from degensac_homography
-
-    #if flann_matrixTransform is not None:
-    #    pdx, pdy = flann_matrixTransform[0,2],flann_matrixTransform[1,2] # get third #element of first and second row
-#        img3 = cv.drawMatches(prevFrame,kpts1,curFrame,kpts2,goodmatches[:],
-#                          None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
-#        plt.imshow(img3),plt.show()
-#    breakpoint()
-
-
-#    if degensac_homography is not None:
-#    degpdx, degpdy = degensac_homography[0,2],degensac_homography[1,2] # get third #element of first and second row
-#        img4 = cv.drawMatches(prevFrame,kpts1,curFrame,kpts2,flann_goodmatches[:],
-#                          None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
-#        plt.imshow(img4),plt.show()
+def calc_ECC_transform(prevFrame, curFrame):
 
     computedECC, ECCTransform = cv.findTransformECC(prevFrame, curFrame, **Transform_ECC_params)
 
-#    computedECC = cv.computeECC(prevFrame, curFrame)
-    print("ECCTransform:  \n", ECCTransform)
     pdx, pdy = ECCTransform[0,2],ECCTransform[1,2]
-#    print("computedECC:  \n", computedECC)
+    print("\n\nECC confidence of transform: ", computedECC, "\npixel delta x-axis: ", pdx, "\npixel delta y-axis: ", pdy)
 
 
-    return  pdx, pdy # pdx, pdy
+    return  pdx, pdy
 
 
 
@@ -483,9 +278,7 @@ max_filament_speed = pixels_per_mm * max_filament_speed # px/s
 # Instantiating stores for values
 velocity_list_x = []
 velocity_list_y = []
-orb_vel_list_x = []
-orb_vel_list_y = []
-old_orb_vx = 0
+old_vx = 0
 k = 0
 tsList = []
 
@@ -515,27 +308,19 @@ with h5py.File(imagePath + '/images.h5', 'r') as f:
             tsList.append(timestamp) # append to list of timestamps
 
 
-#            pdx, pdy = calc_feature_shift(prevFrame, z)
-#            mmdx, mmdy = pdx / pixels_per_mm, pdy / pixels_per_mm
-
-            orb_pdx, orb_pdy = calc_ORB_shift(prevFrame, z)
-            mm_orb_dx, mm_orb_dy = orb_pdx / pixels_per_mm, orb_pdy / pixels_per_mm
+            pdx, pdy = calc_ECC_transform(prevFrame, z)
+            mm_dx, mm_dy = pdx / pixels_per_mm, pdy / pixels_per_mm
 
             #converting from non-timebound relative motion to timebound (seconds) relative motion
-#            vx, vy = mmdx / timestamp, mmdy / timestamp
-            orb_vx, orb_vy = mm_orb_dx / timestamp, mm_orb_dy / timestamp
+            vx, vy = mm_dx / timestamp, mm_dy / timestamp
 
             xmax = max_filament_speed * timestamp # px/interval
-            #print("xmax = ", xmax, " pixels for this image interval")
+            print("xmax = ", xmax, " pixels for this image interval")
 
 
+            velocity_list_x.append(vx)
+            velocity_list_y.append(vy)
 
-
-
-#            velocity_list_x.append(pdx)
-#            velocity_list_y.append(pdy)
-            orb_vel_list_x.append(orb_vx)
-            orb_vel_list_y.append(orb_vy)
 
             prevFrame = z
             k += 1
@@ -552,71 +337,22 @@ with h5py.File(imagePath + '/images.h5', 'r') as f:
             old_orb_vx = orb_vx
             print ('ORB vx: \n', orb_vx, '\n ORB vy: \n', orb_vy)
 
-
 """
 
 
-
-
-# GFTT_shift
-#print ('GFTT dx: \n', velocity_list_x, '\n GFTT dy: \n', velocity_list_y)
-
-
-# ORB_shift
-
-#print ('ORB vx: \n', orb_vel_list_x, '\n ORB vy: \n', orb_vel_list_y)
-
-
-
-# ORB_BEBLID_shift
-
-#print ('ORB + BEBLID vx: \n', orb_beblid_vel_list_x, '\n ORB + BEBLID vy: \n', orb_beblid_vel_list_y)
-
-
-"""
 plt.figure(figsize=(12,8))
 plt.plot(velocity_list_x, c='red')
 plt.xlabel('timestamp us', fontsize=12)
-plt.ylabel('lateral motion, GFTT', fontsize=12)
-#plt.xticks(labels=tsList, rotation=45)
+plt.ylabel('lateral motion, ECC-Transform', fontsize=12)
+#plt.xticks(x, tsList, rotation=45)
 plt.show()
 
 
 plt.figure(figsize=(12,8))
 plt.plot(velocity_list_y, c='green')
 plt.xlabel('timestamp us', fontsize=12)
-plt.ylabel('twisting motion, GFTT', fontsize=12)
-#plt.xticks(x, tsList, rotation=45)
-plt.show()
-"""
-
-plt.figure(figsize=(12,8))
-plt.plot(orb_vel_list_x, c='red')
-plt.xlabel('timestamp us', fontsize=12)
-plt.ylabel('lateral motion, ORB', fontsize=12)
+plt.ylabel('perpendicular motion, ECC-Transform', fontsize=12)
 #plt.xticks(x, tsList, rotation=45)
 plt.show()
 
-
-plt.figure(figsize=(12,8))
-plt.plot(orb_vel_list_y, c='green')
-plt.xlabel('timestamp us', fontsize=12)
-plt.ylabel('perpendicular motion, ORB', fontsize=12)
-#plt.xticks(x, tsList, rotation=45)
-plt.show()
-
-# plt.figure(figsize=(12,8))
-# plt.plot(orb_beblid_vel_list_x, c='red')
-# plt.xlabel('timestamp us', fontsize=12)
-# plt.ylabel('lateral motion, ORB FLANN', fontsize=12)
-# #plt.xticks(x, tsList, rotation=45)
-# plt.show()
-#
-#
-# plt.figure(figsize=(12,8))
-# plt.plot(orb_beblid_vel_list_y, c='green')
-# plt.xlabel('timestamp us', fontsize=12)
-# plt.ylabel('twisting motion, ORB FLANN', fontsize=12)
-# #plt.xticks(x, tsList, rotation=45)
-# plt.show()
 
