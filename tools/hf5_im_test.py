@@ -4,10 +4,10 @@
 #install dependencies:
 # python3 -m pip install numpy rawpy imageio matplotlib opencv-contrib-python h5py
 
-import pydegensac
+#import pydegensac
 import h5py # to enable high-performance file handling
-from numba import jit, njit # to compile code for quicker execution
-import multiprocessing # to run multiple instances of time-consuming processes
+#from numba import jit, njit # to compile code for quicker execution
+#import multiprocessing # to run multiple instances of time-consuming processes
 import subprocess # to execute c-program "double"
 import linecache # to read long files line by line efficiently
 import random # to choose a random image from image range
@@ -18,9 +18,11 @@ import argparse # to accept command-line input
 import cv2 as cv # to use various image manipulations
 import matplotlib.pyplot as plt # for plot functionality
 from pathlib import Path # to handle directory paths properly
-from memory_profiler import profile # for memory benchmarking
+#from memory_profiler import profile # for memory benchmarking
 
-#breakpoint()
+
+
+
 # Take input, expand to range, convert to list with leading zeroes and return
 #@profile
 def retFileList():
@@ -44,13 +46,14 @@ def retFileList():
     fileListMap = map(str, fileList)
     numberList = [str(x).zfill(4) for x in list(fileList)]
     fileList = ["out."+str(x)+".raw" for x in list(numberList)]
-    return fileList, numberList, srcDir, needsLineDoubling
+    imagePath = str(srcDir)
+    return fileList, numberList, imagePath, needsLineDoubling
 
 
-rawList, numberList, srcDir, needsDoubling = retFileList()
-imagePath = str(srcDir)
 
+rawList, numberList, imagePath, needsDoubling = retFileList()
 
+#breakpoint()
 # prepend headers to rawfiles if they don't already have a header
 def checkRawHeader ():
     hf = open('/home/Jacob/Dokumenter/03-Skole/01 - UiT universitet/År 3/08-Bacheloroppgave/pi-media/raw/hd0.32k', 'rb')
@@ -78,13 +81,18 @@ headedList = [imagePath + '/hd.' + str(x) for x in list(rawList)]
 
 denoiseNum = len(numberList)
 
-"""
-hf5_params = dict(shape=(len(numberList), total_rows, total_columns),
-                  maxshape=(len(numberList), total_rows, total_columns),
+random_frame = random.choice(headedList)
+with rawpy.imread(random_frame) as raw:
+    height, width = raw.raw_image_visible.shape
+
+
+
+hf5_params = dict(shape=(len(numberList), height, width),
+                  maxshape=(len(numberList), height, width),
                   chunks = True,
-                  dtype = 'uint8',
-                  chunks = (total_rows, total_columns))
-"""
+                  dtype = 'uint8')
+                  #chunks = (height, width))
+
 
 
 
@@ -98,17 +106,11 @@ with h5py.File(imagePath + '/images.h5', 'w') as f:
                       fbdd_noise_reduction=rawpy.FBDDNoiseReductionMode.Full,
                       no_auto_bright=False, output_bps=8)
                 grayframe = cv.cvtColor(rgb, cv.COLOR_BGR2GRAY)
-                img_array = np.array(grayframe)
-        total_rows = grayframe.shape[0]
-        total_columns = grayframe.shape[1]
+                img_array = np.asarray(grayframe)
 
         # first file; create the dummy dataset with no max shape
         if n == 0:
-            noisy_dataset = f.create_dataset("noisy_images",
-                      shape = (len(numberList), total_rows, total_columns),
-                      maxshape =(len(numberList), total_rows, total_columns),
-                      chunks = True,
-                      dtype = 'uint8')#, compression="lzf", shuffle=True)
+            noisy_dataset = f.create_dataset("noisy_images", **hf5_params) # compression="lzf", shuffle=True)
 
         # stack image array in 0-indexed position of third axis
         f['noisy_images'][n,:,:]=img_array
@@ -126,14 +128,14 @@ with h5py.File(imagePath + '/images.h5', 'w') as f:
 
 #breakpoint()
 
-
+"""
 # Convert from raw to viewable format, stretch lines, denoise
 # Does denoising of the bayer format image before demosaicing
 def convertAndPostProcess():
 
     if needsDoubling == '-d':
         subprocess.Popen(double, currentImage)
-
+"""
 
 
 
@@ -180,7 +182,6 @@ def denoising(arrays, numberIndex, num_frames_window):
 
 def denoise_hf5_parallel():
     numberIndex = 0
-    appendFrom = 0
     # open file read-write
     with h5py.File(imagePath + '/images.h5', 'r+') as f:
 
@@ -226,11 +227,7 @@ def denoise_hf5_parallel():
             # denoised neighbours.
             # first file; create the dummy dataset with no max shape
             if numberIndex == 0:
-                clean_dataset = f.create_dataset("clean_images",
-                              shape = (len(numberList), total_rows, total_columns),
-                              maxshape = (len(numberList), total_rows, total_columns),
-                              chunks = True,
-                              dtype='uint8') #, compression="lzf", shuffle=True)
+                clean_dataset = f.create_dataset("clean_images", **hf5_params) #, compression="lzf", shuffle=True)
 #            breakpoint()
 #            if numberIndex >= chunk_size or numberIndex == denoiseNum - 1 :
 #                # stack image array in 0-indexed position of third axis
@@ -275,7 +272,7 @@ estimate_affine_params = dict ( refineIters = 400,
                                 maxIters = 20000,
                                 confidence = 0.998)
 
-maxCorners = 15000
+maxCorners = 21000
 
 
 
@@ -319,18 +316,18 @@ FLANN_INDEX_AUTOTUNED = 255
 FLANN_INDEX_KDTREE = 1
 FLANN_DIST_HAMMING = 9
 
-LSH_index_params= dict(algorithm = FLANN_INDEX_LSH,
-                   table_number = 30, # 12 or 6
-                   key_size = 20,     # 20 or 12
-                   multi_probe_level = 2,
-                   target_precision = 95)
+LSH_index_params = dict(algorithm = FLANN_INDEX_LSH,
+                        table_number = 12, # 12 or 6
+                        key_size = 20,     # 20 or 12
+                        multi_probe_level = 1,
+                        target_precision = 95)
 
-KDTREE_index_params= dict(algorithm = FLANN_INDEX_KDTREE,
-                          trees = 16,
-                          target_precision = 99)
+KDTREE_index_params = dict(algorithm = FLANN_INDEX_KDTREE,
+                           trees = 16,
+                           target_precision = 99)
 
 
-search_params = dict(checks=200)   # or pass empty dictionary
+search_params = dict(checks=100)   # or pass empty dictionary
 
 ###    FLANN_DIST_EUCLIDEAN = 1,
 ###    FLANN_DIST_L2 = 1,
@@ -348,67 +345,104 @@ search_params = dict(checks=200)   # or pass empty dictionary
 
 
 ### pydegensac parameters
-pydegensac_params = dict(px_th = 3.0,
-                         conf = 0.995,
-                         max_iters = 2000,
-                         laf_consistensy_coef=0,
-                         error_type='sampson',
-                         symmetric_error_check=True)
+pydegensac_params = dict( px_th = 4, # threshold
+                          conf = 0.995,
+                          max_iters = 2000, #
+                          laf_consistensy_coef=0, # check patch for consistency after. Needs special input
+                          error_type='sampson',
+                          symmetric_error_check=True) # same as crossCheck
+
+
+ORB_params = dict(nfeatures=10000, # Max number of keypoints detected.
+                  edgeThreshold=4, # detecting keypoints along the edge of the image is unstable, therefore we ignore the 4 outermost pixel layers.
+                  patchSize=7) # window within to search. Does not overlap at any scale.
+#                  WTA_K=4) # number of matches produced for each keypoint. default is 2
+
+
+HOG_params = dict(_winSize=(32,320), # height x width. winSize is the size of the image cropped to an multiple of the cell size
+                  _blockSize=(8,8), # multiple of cellsize
+                  _blockStride=(8,8), # equal to blocksize
+                  _nbins=9, #
+                  _nlevels=128) # max number of detection window increases. default 64
 
 
 def calc_ORB_shift(prevFrame, curFrame):
     # initialize ORB detector algo
-    orb = cv.ORB_create(nfeatures=6000, edgeThreshold=5, patchSize=17)
+    orb = cv.ORB_create(**ORB_params)
 
+    # initialize Histogram-of-Oriented_gradients descriptor.
+#    hog = cv.HOGDescriptor(**HOG_params)
     # Detect keypoints and compute descriptors for currentFrame and nextFrame
     kpts1, descriptors1 = orb.detectAndCompute(prevFrame,None)
     kpts2, descriptors2 = orb.detectAndCompute(curFrame,None)
-
+#    breakpoint()
     flannMatcher = cv.FlannBasedMatcher(KDTREE_index_params, search_params)
 
     # return k nearest neighbours
-    flann_matches = flannMatcher.knnMatch(np.asarray(descriptors1,np.float32),
-                                          np.asarray(descriptors2,np.float32), k=2)
+    flann_matches = flannMatcher.knnMatch(np.asarray(descriptors1, dtype=np.float32),
+                                          np.asarray(descriptors2, dtype=np.float32), k=2)
 
+#    goodmatches = flannMatcher.knnMatch(np.asarray(descriptors1, dtype=np.uint8),
+#                                          np.asarray(descriptors2, dtype=np.uint8), k=2)
+
+#    flann_matches = flannMatcher.knnMatch(descriptors1,
+#                                         descriptors2, k=2)
+    # create BFMatcher object
+#    bf = cv.BFMatcher(cv.NORM_HAMMING2, crossCheck=True) # HAMMING2 when WTA_K is 3 or 4
+
+    # Match descriptors.
+#    bfmatches = bf.match(descriptors1, descriptors2)
+#    bfmatches = np.asarray(bfmatches, dtype=np.uint8)
     # Need to draw only good matches, so create a mask
+#    breakpoint()
 
-    flann_goodmatches = []
+    # Sort them in the order of their distance.
+#    bfmatches = sorted(bfmatches, key = lambda x:x.distance)
+
+    goodmatches = []
     # ratio test as per Lowe's paper
-    for (match1,match2) in (flann_matches):
-        if match1.distance < 0.95 * match2.distance:
-            flann_goodmatches.append(match1)
+    for (m,n) in (flann_matches):
+        if m.distance < 0.95 * n.distance:
+            goodmatches.append(m)
+
+    first = np.empty((len(goodmatches),2), dtype=np.uint8)
+    second = np.empty((len(goodmatches),2), dtype=np.uint8)
+#    for i in range(len(goodmatches)):
+#        #-- Get the keypoints from the good matches
+#        first[i,0] = kpts1[bfmatches[i].queryIdx].pt[0]
+#        first[i,1] = kpts1[bfmatches[i].queryIdx].pt[1]
+#        second[i,0] = kpts2[bfmatches[i].trainIdx].pt[0]
+#        second[i,1] = kpts2[bfmatches[i].trainIdx].pt[1]
 
 
-
-
-    first = np.empty((len(flann_goodmatches),2), dtype=np.float32)
-    second = np.empty((len(flann_goodmatches),2), dtype=np.float32)
-    for i in range(len(flann_goodmatches)):
+#    first = np.empty((len(flann_goodmatches),2), dtype=np.float32)
+#    second = np.empty((len(flann_goodmatches),2), dtype=np.float32)
+    for i in range(len(goodmatches)):
         #-- Get the keypoints from the good matches
-        first[i,0] = kpts1[flann_goodmatches[i].queryIdx].pt[0]
-        first[i,1] = kpts1[flann_goodmatches[i].queryIdx].pt[1]
-        second[i,0] = kpts2[flann_goodmatches[i].trainIdx].pt[0]
-        second[i,1] = kpts2[flann_goodmatches[i].trainIdx].pt[1]
+        first[i,0] = kpts1[goodmatches[i].queryIdx].pt[0]
+        first[i,1] = kpts1[goodmatches[i].queryIdx].pt[1]
+        second[i,0] = kpts2[goodmatches[i].trainIdx].pt[0]
+        second[i,1] = kpts2[goodmatches[i].trainIdx].pt[1]
 
     flann_matrixTransform, fstatus = cv.estimateAffinePartial2D(first, second, **estimate_affine_params)
-    degensac_homography, status = pydegensac.findHomography(first, second, **pydegensac_params)
+#    degensac_homography, status = pydegensac.findHomography(first, second, **pydegensac_params)
 #    cv.decomposeHomography is needed to extract trabslation from degensac_homography
 
     if flann_matrixTransform is not None:
         pdx, pdy = flann_matrixTransform[0,2],flann_matrixTransform[1,2] # get third #element of first and second row
-#        img3 = cv.drawMatches(prevFrame,kpts1,curFrame,kpts2,flann_goodmatches[:],
+#        img3 = cv.drawMatches(prevFrame,kpts1,curFrame,kpts2,goodmatches[:],
 #                          None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
 #        plt.imshow(img3),plt.show()
 #    breakpoint()
 
 
 #    if degensac_homography is not None:
-    degpdx, degpdy = degensac_homography[0,2],degensac_homography[1,2] # get third #element of first and second row
+#    degpdx, degpdy = degensac_homography[0,2],degensac_homography[1,2] # get third #element of first and second row
 #        img4 = cv.drawMatches(prevFrame,kpts1,curFrame,kpts2,flann_goodmatches[:],
 #                          None,flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
 #        plt.imshow(img4),plt.show()
 
-    return pdx, pdy #, degpdx, degpdy
+    return  pdx, pdy # pdx, pdy
 
 
 
@@ -427,16 +461,14 @@ old_orb_vx = 0
 k = 0
 tsList = []
 
-
+#breakpoint()
 denoise_hf5_parallel()
 
-with h5py.File(imagePath + '/images.h5', 'r+') as f:
+with h5py.File(imagePath + '/images.h5', 'r') as f:
     # load a slice containing n image arrays from clean dataset
-    if len(numberList) >= chunk_size:
-        clean_slice = f['clean_images'][:] #[:chunksize]
-    else:
-        # get slice with all elements
-        clean_slice = f['clean_images'][:]
+
+    clean_slice = f['clean_images'][:] #[:chunksize]
+
 
     print(clean_slice)
     # iterate over slice's first axis to make images from individual layers
@@ -543,7 +575,7 @@ plt.show()
 plt.figure(figsize=(12,8))
 plt.plot(orb_vel_list_y, c='green')
 plt.xlabel('timestamp us', fontsize=12)
-plt.ylabel('twisting motion, ORB', fontsize=12)
+plt.ylabel('perpendicular motion, ORB', fontsize=12)
 #plt.xticks(x, tsList, rotation=45)
 plt.show()
 
