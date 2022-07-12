@@ -1,10 +1,14 @@
 #!/bin/env python3
+
 # Copyright Jacob Dybvald Ludvigsen, 2022
+# you may use this software for any purpose, as long as you include the above Copyright notice
 # This is free software, licenced under BSD-3-Clause
+
+
 #install dependencies:
 # python3 -m pip install numpy rawpy imageio matplotlib opencv-contrib-python h5py
 
-#import pydegensac
+import csv # for output of data
 import h5py # to enable high-performance file handling
 #from numba import jit, njit # to compile code for quicker execution
 #import multiprocessing # to run multiple instances of time-consuming processes
@@ -70,11 +74,7 @@ def checkRawHeader ():
 
 
 # breaking list into chunks
-
 chunk_size = 200 #images held in memory at once
-
-#numberList = [numberList[i:i+chunk_size] for i in range(0, len(numberList), chunk_size)]
-#breakpoint()
 
 # list with files which have a header
 headedList = [imagePath + '/hd.' + str(x) for x in list(rawList)]
@@ -91,7 +91,6 @@ hf5_params = dict(shape=(len(numberList), height, width),
                   maxshape=(len(numberList), height, width),
                   chunks = True,
                   dtype = 'uint8')
-                  #chunks = (height, width))
 
 
 
@@ -125,17 +124,6 @@ with h5py.File(imagePath + '/images.h5', 'w') as f:
     for k in f['noisy_images'].attrs.keys():
         attr_value= f['noisy_images'].attrs[k]
         print(k , attr_value)
-
-
-
-"""
-# Convert from raw to viewable format, stretch lines, denoise
-# Does denoising of the bayer format image before demosaicing
-def convertAndPostProcess():
-
-    if needsDoubling == '-d':
-        subprocess.Popen(double, currentImage)
-"""
 
 
 
@@ -253,7 +241,7 @@ def denoise_hf5():
 
 Transform_ECC_params = dict(warpMatrix = np.eye(2, 3, dtype=np.float32), # preparing unity matrix for x- and y- axis
                             motionType = cv.MOTION_TRANSLATION, # only motion in x- and y- axes
-                            criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10000,  1E-10)) # max iteration count and desired epsilon. Terminates when either is reached.
+                            criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 1000,  1E-10)) # max iteration count and desired epsilon. Terminates when either is reached.
                             #gaussFiltSize = 5)
 
 
@@ -269,31 +257,40 @@ def calc_ECC_transform(prevFrame, curFrame):
 
 
 
+def write_example_pictures(frame):
+        Image.fromarray(frame.astype('uint8')).save(imagePath + '/excerpt_image.png')
+
+
+
 # counting pixels
 max_filament_speed = 140 #mm/s
 pixels_per_mm = 611 # estimated by counting pixels between edges of known object
-max_filament_speed = pixels_per_mm * max_filament_speed # px/s
+max_filament_speed = pixels_per_mm * max_filament_speed # pixels/second
 
 
 # Instantiating stores for values
 velocity_list_x = []
 velocity_list_y = []
+out_information = []
+csv_field_names = ['mm/s X-axis', 'mm/s Y-axis', 'Timestamp [s]']
 old_vx = 0
 k = 0
 tsList = []
+total_timestamp = 0
+total_timestamp_list = []
 
-#breakpoint()
 denoise_hf5()
 
 with h5py.File(imagePath + '/images.h5', 'r') as f:
     # load a slice containing n image arrays from clean dataset
 
     clean_slice = f['clean_images'][:] #[:chunksize]
-
+    random_frame = random.choice(clean_slice)
+    imageio.imsave(imagePath + '/excerpt_image.png', random_frame)
 
     print(clean_slice)
     # iterate over slice's first axis to make images from individual layers
-    for z in clean_slice:
+    for z,x in zip(clean_slice, numberList):
 
         if k == 0:
             prevFrame = z
@@ -301,58 +298,51 @@ with h5py.File(imagePath + '/images.h5', 'r') as f:
             continue # nothing to do with just the first image array
         else:
             # fetch specific line from cached file,an efficient method.
-            # since k is 0-indexed and getline is 1-indexed, we must increment with k+1
-            line = linecache.getline(imagePath + "/tstamps.csv", k+1)
+            line = linecache.getline(imagePath + "/tstamps.csv", int(x))
             timestamp = line.split(",")[0] # store whatever comes before comma in the specific line as timestamp. microsecond format
-            timestamp = int(timestamp)/(10E+6) # convert from microsecond to second
-            tsList.append(timestamp) # append to list of timestamps
+            timestamp_second = int(timestamp)/(10E+6) # convert from microsecond to second
+            tsList.append(timestamp_second) # append to list of timestamps
+            total_timestamp = total_timestamp + int(timestamp)
+            total_timestamp_list.append(total_timestamp)
 
 
-            pdx, pdy = calc_ECC_transform(prevFrame, z)
-            mm_dx, mm_dy = pdx / pixels_per_mm, pdy / pixels_per_mm
+            pdx, pdy = calc_ECC_transform(prevFrame, z) # get pixel-relative motion between frames
+            mm_dx, mm_dy = pdx / pixels_per_mm, pdy / pixels_per_mm # convert to millimeter-relative motion
 
             #converting from non-timebound relative motion to timebound (seconds) relative motion
-            vx, vy = mm_dx / timestamp, mm_dy / timestamp
+            vx, vy = mm_dx / timestamp_second, mm_dy / timestamp_second
 
-            xmax = max_filament_speed * timestamp # px/interval
+            xmax = max_filament_speed * timestamp_second # px/interval
             print("xmax = ", xmax, " pixels for this image interval")
 
 
             velocity_list_x.append(vx)
             velocity_list_y.append(vy)
+            out_info = (vx, vy, timestamp_second)
+            out_information.append(out_info)
 
-
-            prevFrame = z
+            prevFrame = z # store array as old variable
             k += 1
 
-"""
 
-            if old_orb_vx != 0:
-                if np.abs(orb_vx) > 1.5 * old_orb_vx or np.abs(orb_vx) < 0.5 * old_orb_vx:
-                    orb_vx = old_orb_vx
-
-            if np.abs(orb_vx) > xmax:
-                orb_vx = old_orb_vx
-
-            old_orb_vx = orb_vx
-            print ('ORB vx: \n', orb_vx, '\n ORB vy: \n', orb_vy)
-
-"""
+### write comma separated value file, for reuse in other software or analysis
+with open(imagePath + '/velocity_estimates.csv', 'w') as csvfile:
+    csvwriter = csv.writer(csvfile)
+    csvwriter.writerow(csv_field_names)
+    csvwriter.writerows(out_information)
 
 
+# plot velocity along x-axis
 plt.figure(figsize=(12,8))
-plt.plot(velocity_list_x, c='red')
+plt.plot(total_timestamp_list, velocity_list_x, c = 'red', marker = 'o')
 plt.xlabel('timestamp us', fontsize=12)
-plt.ylabel('lateral motion, ECC-Transform', fontsize=12)
-#plt.xticks(x, tsList, rotation=45)
+plt.ylabel('lateral motion', fontsize=12)
 plt.show()
 
 
+# plot velocity along y-axis
 plt.figure(figsize=(12,8))
-plt.plot(velocity_list_y, c='green')
+plt.plot(total_timestamp_list, velocity_list_y, c = 'green', marker = 'o')
 plt.xlabel('timestamp us', fontsize=12)
-plt.ylabel('perpendicular motion, ECC-Transform', fontsize=12)
-#plt.xticks(x, tsList, rotation=45)
+plt.ylabel('perpendicular motion', fontsize=12)
 plt.show()
-
-
