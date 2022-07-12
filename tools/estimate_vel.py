@@ -105,14 +105,13 @@ with h5py.File(imagePath + '/images.h5', 'w') as f:
                       fbdd_noise_reduction=rawpy.FBDDNoiseReductionMode.Full,
                       no_auto_bright=False, output_bps=8)
                 grayframe = cv.cvtColor(rgb, cv.COLOR_BGR2GRAY)
-                img_array = np.asarray(grayframe)
 
         # first file; create the dummy dataset with no max shape
         if n == 0:
             noisy_dataset = f.create_dataset("noisy_images", **hf5_params) # compression="lzf", shuffle=True)
 
         # stack image array in 0-indexed position of third axis
-        f['noisy_images'][n,:,:]=img_array
+        f['noisy_images'][n,:,:]=grayframe
 
 #set attributes for image dataset
     noisy_dataset.attrs['CLASS'] = 'IMAGE'
@@ -139,10 +138,12 @@ def enhance_contrast(image_matrix, bins=256): # https://gist.github.com/msameeru
     # cumulative sum
     cum_sum = np.cumsum(image_hist)
     norm = (cum_sum - cum_sum.min()) * 255
+    #print(norm)
     # normalization of the pixel values
     n_ = cum_sum.max() - cum_sum.min()
     uniform_norm = norm / n_
     uniform_norm = uniform_norm.astype('int')
+    #print("uniform: ", uniform_norm)
 
     # flat histogram
     image_eq = uniform_norm[image_flattened]
