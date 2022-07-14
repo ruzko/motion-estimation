@@ -1,12 +1,13 @@
 #!/bin/env python3
 
 # Copyright Jacob Dybvald Ludvigsen, 2022
-# you may use this software for any purpose, as long as you include the above Copyright notice
+# you may use this software for any purpose, as long as you include the above Copyright notice,
+# and follow the conditions of the licence.
 # This is free software, licenced under BSD-3-Clause
 
 
 #install dependencies:
-# python3 -m pip install numpy rawpy imageio matplotlib opencv-contrib-python h5py
+# python3 -m pip install numpy rawpy imageio matplotlib opencv-contrib-python h5py matplotlib
 
 import csv # for output of data
 import h5py # to enable high-performance file handling
@@ -60,7 +61,7 @@ rawList, numberList, imagePath, needsDoubling = retFileList()
 #breakpoint()
 # prepend headers to rawfiles if they don't already have a header
 def checkRawHeader ():
-    hf = open('/home/Jacob/Dokumenter/03-Skole/01 - UiT universitet/År 3/08-Bacheloroppgave/pi-media/raw/hd0.32k', 'rb')
+    hf = open('../exampleRaws/IMX219_rawHeader/hd0.32k', 'rb')
     header = hf.read()
     hf.close()
     for x in list(rawList):
@@ -74,7 +75,7 @@ def checkRawHeader ():
 
 
 # breaking list into chunks
-chunk_size = 200 #images held in memory at once
+ chunk_size = 200 #images held in memory at once
 
 # list with files which have a header
 headedList = [imagePath + '/hd.' + str(x) for x in list(rawList)]
@@ -246,26 +247,32 @@ Transform_ECC_params = dict(warpMatrix = np.eye(2, 3, dtype=np.float32), # prepa
                             #gaussFiltSize = 5)
 
 
+# Get total shift in x- and y- direction between two image frames / arrays
 def calc_ECC_transform(prevFrame, curFrame):
 
+    # Calculate the transform matrix which must be applied to prevFrame in order to match curFrame
     computedECC, ECCTransform = cv.findTransformECC(prevFrame, curFrame, **Transform_ECC_params)
 
+    # Extract second element of first and second row to be shift in their respective directions
     pdx, pdy = ECCTransform[0,2],ECCTransform[1,2]
-    print("\n\nECC confidence of transform: ", computedECC, "\npixel delta x-axis: ", pdx, "\npixel delta y-axis: ", pdy)
 
+    # I think computedECC is the confidence that the transform matrix fits.
+    print("\n\nECC confidence of transform: ", computedECC, "\npixel delta x-axis: ", pdx, "\npixel delta y-axis: ", pdy)
 
     return  pdx, pdy
 
 
 
+# pick a random array from the current dataset to serve as a visualization image
 def write_example_pictures(frame):
         Image.fromarray(frame.astype('uint8')).save(imagePath + '/excerpt_image.png')
 
 
 
-# counting pixels
-max_filament_speed = 140 #mm/s
+# These two variables anchor motion estimates to real-world values
+max_filament_speed = 140 # mm/s
 pixels_per_mm = 611 # estimated by counting pixels between edges of known object
+
 max_filament_speed = pixels_per_mm * max_filament_speed # pixels/second
 
 
@@ -276,9 +283,9 @@ out_information = []
 csv_field_names = ['mm/s X-axis', 'mm/s Y-axis', 'Timestamp [s]']
 old_vx = 0
 k = 0
-tsList = []
+tsList = [] # timestamps indexed per-frame
 total_timestamp = 0
-total_timestamp_list = []
+total_timestamp_list = [] # cumulative timestamps
 
 denoise_hf5()
 
@@ -322,7 +329,7 @@ with h5py.File(imagePath + '/images.h5', 'r') as f:
             out_info = (vx, vy, timestamp_second)
             out_information.append(out_info)
 
-            prevFrame = z # store array as old variable
+            prevFrame = z # store current array as different variable to use next iteration
             k += 1
 
 
