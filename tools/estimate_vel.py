@@ -28,6 +28,7 @@ from pathlib import Path # to handle directory paths properly
 
 
 
+
 # Take input, expand to range, convert to list with leading zeroes and return
 #@profile
 def retFileList():
@@ -60,7 +61,7 @@ rawList, numberList, imagePath, needsDoubling = retFileList()
 
 #breakpoint()
 # prepend headers to rawfiles if they don't already have a header
-def checkRawHeader ():
+def checkRawHeader():
     hf = open('../exampleRaws/IMX219_rawHeader/hd0.32k', 'rb')
     header = hf.read()
     hf.close()
@@ -69,16 +70,17 @@ def checkRawHeader ():
         if header != partialRaw: # check whether the first 32 blocks of the rawfile is identical to the header
             with open(imagePath  + '/' + x, 'rb') as original: data = original.read()
             with open(imagePath + '/hd.' + x, 'wb') as modified: modified.write(header + data)
-    return
+    # list with files which have a header
+    headedList = [imagePath + '/hd.' + str(x) for x in list(rawList)]
+    return headedList
 
+headedList = checkRawHeader()
 
-
-
+#breakpoint()
 # breaking list into chunks
- chunk_size = 200 #images held in memory at once
+chunk_size = 200 #images held in memory at once
 
-# list with files which have a header
-headedList = [imagePath + '/hd.' + str(x) for x in list(rawList)]
+
 
 denoiseNum = len(numberList)
 
@@ -127,31 +129,64 @@ with h5py.File(imagePath + '/images.h5', 'w') as f:
 
 
 
+#@profile
 ### Increase contrast by equalisizing histogram
-def enhance_contrast(image_matrix, bins=256): # https://gist.github.com/msameeruddin/8629aa0bf58521a22bb67ed0fea82fee
-    image_flattened = image_matrix.flatten()
-    image_hist = np.zeros(bins)
+def enhance_contrast(bins=256): # https://gist.github.com/msameeruddin/8629aa0bf58521a22bb67ed0fea82fee
+    numberIndex = 0
+    with h5py.File(imagePath + '/images.h5', 'r+') as f:
+         low_contrast_slice = f['noisy_images'][:]
+         for z in low_contrast_slice:
 
-    # frequency count of each pixel
-    for pix in image_matrix:
-        image_hist[pix] += 1
+             image_flattened = z.flatten()
+             image_hist = np.zeros(bins)
 
-    # cumulative sum
-    cum_sum = np.cumsum(image_hist)
-    norm = (cum_sum - cum_sum.min()) * 255
-    #print(norm)
-    # normalization of the pixel values
-    n_ = cum_sum.max() - cum_sum.min()
-    uniform_norm = norm / n_
-    uniform_norm = uniform_norm.astype('int')
-    #print("uniform: ", uniform_norm)
+             # frequency count of each pixel
+             for pix in z:
+                 image_hist[pix] += 1
 
-    # flat histogram
-    image_eq = uniform_norm[image_flattened]
-    # reshaping the flattened matrix to its original shape
-    image_eq = np.reshape(a=image_eq, newshape=image_matrix.shape)
+              # cumulative sum
+             cum_sum = np.cumsum(image_hist)
+             norm = (cum_sum - cum_sum.min()) * 255
+             #print(norm)
 
-    return image_eq
+             # normalization of the pixel values
+             n_ = cum_sum.max() - cum_sum.min()
+             uniform_norm = norm / n_
+             uniform_norm = uniform_norm.astype('int')
+             print("uniform: ", uniform_norm)
+
+             # flat histogram
+             image_eq = uniform_norm[image_flattened]
+
+             # reshaping the flattened matrix to its original shape
+             image_eq = np.reshape(a=image_eq, newshape=z.shape)
+
+             # make a dataset to hold hi-contrast images, for further processing later
+             # first file; create the dummy dataset with no max shape
+             if numberIndex == 0:
+                 hi_contrast_dataset = f.create_dataset("hi_contrast_images", **hf5_params)
+
+             # layer the current array on top of previous array, write to file. Slow.
+             # Ideally, number of write processes should be minimized.
+             f['hi_contrast_images'][numberIndex,:,:]=image_eq
+
+             numberIndex += 1
+
+         #set attributes for image dataset
+         hi_contrast_dataset.attrs['CLASS'] = 'IMAGE'
+         hi_contrast_dataset.attrs['IMAGE_VERSION'] = '1.2'
+         hi_contrast_dataset.attrs['IMAGE_SUBCLASS'] =  'IMAGE_GRAYSCALE'
+         hi_contrast_dataset.attrs['IMAGE_MINMAXRANGE'] = np.array([0,255], dtype=np.uint8)
+         hi_contrast_dataset.attrs['IMAGE_WHITE_IS_ZERO'] =  0
+
+    return
+
+
+### Blur image to reduce noise. We don't really need sharp edges to estimate motion with findTransformECC()
+def blurring(sharpImage):
+    blurredImage = cv.GaussianBlur(sharpImage, (21, 21), sigmaX=0)
+
+    return blurredImage
 
 
 
@@ -159,13 +194,13 @@ def enhance_contrast(image_matrix, bins=256): # https://gist.github.com/msameeru
 def denoising(arrays, numberIndex, num_frames_window):
 
     cleanImageArray = cv.fastNlMeansDenoisingMulti(srcImgs=arrays,
-                        imgToDenoiseIndex=numberIndex,     temporalWindowSize=num_frames_window,
-                          h=4, templateWindowSize=7,     searchWindowSize=21)
+                        imgToDenoiseIndex=numberIndex, temporalWindowSize=num_frames_window,
+                          h=61, templateWindowSize=19, searchWindowSize=41) # h is filter strength. h=10 is default
     return cleanImageArray
 
 
 
-
+#@profile
 ### Main function for denoising and contrast enhancing of image arrays
 def denoise_hf5():
     numberIndex = 0
@@ -174,10 +209,10 @@ def denoise_hf5():
 
         # load a slice containing n images from noisy dataset, not yet implemented
         if len(numberList) >= chunk_size:
-            noisy_slice = f['noisy_images'][:] #[:chunksize]
+            noisy_slice = f['hi_contrast_images'][:] #[:chunksize]
         else:
             # get slice with all elements.
-            noisy_slice = f['noisy_images'][:]
+            noisy_slice = f['hi_contrast_images'][:]
 
 
         print(noisy_slice)
@@ -185,11 +220,11 @@ def denoise_hf5():
         for z in noisy_slice:
 
 
-            # denoise images
+            # denoise image
             if (numberIndex <= 1) or (numberIndex >= (denoiseNum - 2)):
                 # denoise two first and last images individually
                 cleanImageArray = cv.fastNlMeansDenoising(src=z,
-                           h=3, templateWindowSize=7, searchWindowSize=21)
+                           h=41, templateWindowSize=21, searchWindowSize=45)
 
             elif (numberIndex <= 4) or (numberIndex >= (denoiseNum - 4)):
                 # denoise using some neighbouring images as template
@@ -198,13 +233,12 @@ def denoise_hf5():
             elif(numberIndex <= 7) or (numberIndex >= (denoiseNum - 7)):
                 # denoise using more neighbouring images as template
                 cleanImageArray = denoising(noisy_slice, numberIndex, 9)
+
             else:
                 # denoise using more neighbouring images as template
                 cleanImageArray = denoising(noisy_slice, numberIndex, 13)
 
-
-            # increase image contrast
-            cleanImageArray = enhance_contrast(cleanImageArray)
+            blurredImageArray = blurring(cleanImageArray)
 
 
             # make a dataset to hold denoised images, so the images don't bleed     out due to their
@@ -228,7 +262,7 @@ def denoise_hf5():
 
             # layer the current array on top of previous array, write to file. Slow.
             # Ideally, number of write processes should be minimized.
-            f['clean_images'][numberIndex,:,:]=cleanImageArray
+            f['clean_images'][numberIndex,:,:]=blurredImageArray
             numberIndex += 1
 
     #set attributes for image dataset
@@ -247,6 +281,7 @@ Transform_ECC_params = dict(warpMatrix = np.eye(2, 3, dtype=np.float32), # prepa
                             #gaussFiltSize = 5)
 
 
+#@profile
 # Get total shift in x- and y- direction between two image frames / arrays
 def calc_ECC_transform(prevFrame, curFrame):
 
@@ -254,7 +289,7 @@ def calc_ECC_transform(prevFrame, curFrame):
     computedECC, ECCTransform = cv.findTransformECC(prevFrame, curFrame, **Transform_ECC_params)
 
     # Extract second element of first and second row to be shift in their respective directions
-    pdx, pdy = ECCTransform[0,2],ECCTransform[1,2]
+    pdx, pdy = ECCTransform[0,2], ECCTransform[1,2]
 
     # I think computedECC is the confidence that the transform matrix fits.
     print("\n\nECC confidence of transform: ", computedECC, "\npixel delta x-axis: ", pdx, "\npixel delta y-axis: ", pdy)
@@ -264,13 +299,14 @@ def calc_ECC_transform(prevFrame, curFrame):
 
 
 # pick a random array from the current dataset to serve as a visualization image
-def write_example_pictures(frame):
-        Image.fromarray(frame.astype('uint8')).save(imagePath + '/excerpt_image.png')
+def write_example_picture(frame):
+    Image.fromarray(frame.astype('uint8')).save(imagePath + '/excerpt_image.png')
 
 
 
 # These two variables anchor motion estimates to real-world values
-max_filament_speed = 140 # mm/s
+max_filament_speed = 140 # mm/min
+max_filament_speed_sec = max_filament_speed / 60 # mm/s
 pixels_per_mm = 611 # estimated by counting pixels between edges of known object
 
 max_filament_speed = pixels_per_mm * max_filament_speed # pixels/second
@@ -280,20 +316,27 @@ max_filament_speed = pixels_per_mm * max_filament_speed # pixels/second
 velocity_list_x = []
 velocity_list_y = []
 out_information = []
-csv_field_names = ['mm/s X-axis', 'mm/s Y-axis', 'Timestamp [s]']
+csv_field_names = ['mm/min X-axis', 'mm/min Y-axis', 'Timestamp [s]']
 old_vx = 0
 k = 0
 tsList = [] # timestamps indexed per-frame
 total_timestamp = 0
 total_timestamp_list = [] # cumulative timestamps
 
+
+# call enhance_contrast function
+enhance_contrast()
+
+# call denoise_hf5 function
 denoise_hf5()
 
 with h5py.File(imagePath + '/images.h5', 'r') as f:
     # load a slice containing n image arrays from clean dataset
-
     clean_slice = f['clean_images'][:] #[:chunksize]
+
+    # write example image
     random_frame = random.choice(clean_slice)
+    #write_example_picture(random_frame)
     imageio.imsave(imagePath + '/excerpt_image.png', random_frame)
 
     print(clean_slice)
@@ -308,7 +351,8 @@ with h5py.File(imagePath + '/images.h5', 'r') as f:
             # fetch specific line from cached file,an efficient method.
             line = linecache.getline(imagePath + "/tstamps.csv", int(x))
             timestamp = line.split(",")[0] # store whatever comes before comma in the specific line as timestamp. microsecond format
-            timestamp_second = int(timestamp)/(10E+6) # convert from microsecond to second
+            timestamp_second = int(timestamp) / (10E+6) # convert from microsecond to second
+            timestamp_minute = timestamp_second / 60
             tsList.append(timestamp_second) # append to list of timestamps
             total_timestamp = total_timestamp + int(timestamp)
             total_timestamp_list.append(total_timestamp)
@@ -318,15 +362,16 @@ with h5py.File(imagePath + '/images.h5', 'r') as f:
             mm_dx, mm_dy = pdx / pixels_per_mm, pdy / pixels_per_mm # convert to millimeter-relative motion
 
             #converting from non-timebound relative motion to timebound (seconds) relative motion
-            vx, vy = mm_dx / timestamp_second, mm_dy / timestamp_second
+            vxs, vys = mm_dx / timestamp_second, mm_dy / timestamp_second
+            vxm, vym = mm_dx / timestamp_minute, mm_dy / timestamp_minute
 
-            xmax = max_filament_speed * timestamp_second # px/interval
+            xmax = max_filament_speed * timestamp_minute # px/interval
             print("xmax = ", xmax, " pixels for this image interval")
 
 
-            velocity_list_x.append(vx)
-            velocity_list_y.append(vy)
-            out_info = (vx, vy, timestamp_second)
+            velocity_list_x.append(vxm)
+            velocity_list_y.append(vym)
+            out_info = (vxm, vym, timestamp_second)
             out_information.append(out_info)
 
             prevFrame = z # store current array as different variable to use next iteration
@@ -344,7 +389,7 @@ with open(imagePath + '/velocity_estimates.csv', 'w') as csvfile:
 plt.figure(figsize=(12,8))
 plt.plot(total_timestamp_list, velocity_list_x, c = 'red', marker = 'o')
 plt.xlabel('timestamp us', fontsize=12)
-plt.ylabel('lateral motion', fontsize=12)
+plt.ylabel('lateral motion [mm/min]', fontsize=12)
 plt.show()
 
 
@@ -352,5 +397,5 @@ plt.show()
 plt.figure(figsize=(12,8))
 plt.plot(total_timestamp_list, velocity_list_y, c = 'green', marker = 'o')
 plt.xlabel('timestamp us', fontsize=12)
-plt.ylabel('perpendicular motion', fontsize=12)
+plt.ylabel('perpendicular motion [mm/min]', fontsize=12)
 plt.show()
