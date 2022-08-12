@@ -34,21 +34,21 @@ if [ ! -e /sys/class/gpio/gpio$input_pin ]; then
 fi
 echo "pin $input_pin is set as input pin"
 
-#initialize raspivid, check process id
-$rec_cmd
+#initialize raspivid to background, check process id
+$rec_cmd&
 sleep 0.2
 process_id=$(pgrep raspivid)
-echo $process_id 
+#echo $process_id
 
 #reading the input pin continuously, every interval
 declare -i i
 while [ 1 ]; do
   status=$(< /sys/class/gpio/gpio$input_pin/value)
-  echo $status
+  #echo $status
   if [[ $status = "1" ]]; then
     i+=1
   fi
-  sleep 0.002 #seconds
+  sleep 0.001 #seconds
   if [[ $status != "1" && i>="1" ]]; then
     i=0
   fi
@@ -60,4 +60,5 @@ done
 
 #send signal to start recording, get system timestamp for later comparison with recorded frames
 kill -USR1 $process_id
+echo 'recording triggered at [unix time, millis]:'
 echo $(($(date +%s%N)/1000))
