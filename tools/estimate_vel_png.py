@@ -30,145 +30,144 @@ from pathlib import Path # to handle directory paths properly
 # Take input, expand to range, convert to list with leading zeroes and return
 #@profile
 def retFileList():
-    fileList = []
+    numberList = []
     firstFrame = ''
     lastFrame = ''
     parser = argparse.ArgumentParser()
-    parser.add_argument(type=int, nargs = 2, action='store', dest='fileIndex', \
-          default=False, help='numbers of first and last image files to be read')
+    parser.add_argument(type=int, nargs ='*', action='store', dest='fileIndex', \
+          default='False', help='index of first image to be read. If full is passed, the whole video is used')
+
+    parser.add_argument('-f', '--full', nargs ='?', action='store', dest='useWholeVideo', \
+          default='False', const='True', help='index of last image to be read. If full is passed, the whole video is used')
+
     parser.add_argument('-p', '--path', nargs='?', type=Path, dest="srcDirectory", default='/dev/shm/', \
           help='which directory to read images from. Specify with "-p <path-to-folder>" or "--path <path-to-folder". Leave empty for /dev/shm/')
-    parser.add_argument('-d', nargs='?', type=str, dest='doLineDoubling', action='store', \
-           help='optionally add "-d" if images were recorded with line skips, to stretch lines.')
+
+    parser.add_argument('-c', '--continue', nargs='?', action='store', dest='continuation', \
+        default='False', const='True', help='continue analysis of video from previous attempt')
+
     args = parser.parse_args()
     srcDir = args.srcDirectory
-    firstFrame, lastFrame = args.fileIndex
-    needsLineDoubling = args.doLineDoubling
-    r = range(firstFrame, lastFrame)
-    fileList = list([*r])
-    fileList.append(lastFrame)
-    fileListMap = map(str, fileList)
-    numberList = [str(x).zfill(4) for x in list(fileList)]
-    fileList = ["frame"+str(x) for x in list(numberList)]
     imagePath = str(srcDir)
-    return fileList, numberList, imagePath, needsLineDoubling
+
+    continuation = args.continuation
+
+    if args.fileIndex != None and args.useWholeVideo != 'True':
+        firstFrame, lastFrame = args.fileIndex
+        r = range(firstFrame, lastFrame)
+        numberList = list([*r])
+        numberList.append(lastFrame)
+    if args.useWholeVideo == "True":
+        lastFrame = -1
+    return firstFrame, lastFrame, numberList, imagePath, continuation
 
 
 
-fileList, numberList, imagePath, needsDoubling = retFileList()
+firstFrame, lastFrame, numberList, imagePath, continuation = retFileList()
 
 
-denoiseNum = len(numberList)
-
-def get_dims():
+def get_meta():
     while (1):
         cap = cv.VideoCapture(imagePath + "/video.mkv")
         # get vcap property
         width  = int(cap.get(3))   # float `width`
         height = int(cap.get(4))  # float `height`
+        totalFrames = int(cap.get(7)) # cv.CAP_PROP_FRAME_COUNT
+
         cap.release()
         break
-    return width, height
+    return width, height, totalFrames
 
-width, height = get_dims()
-
-hf5_params = dict(shape=(len(numberList), height, width),
-                  maxshape=(len(numberList), height, width),
-                  chunks = True,
-                  dtype = 'uint8')
+width, height, totalFrames = get_meta()
 
 
 
+if lastFrame != -1:
+    hf5_params = dict(shape=(len(numberList), height, width),
+                maxshape=(len(numberList), height, width),
+                chunks = True,
+                dtype = 'uint8')
 
-# read video, save frames as efficient hdf5 format file
+
+if lastFrame == -1:
+    hf5_params = dict(shape=(totalFrames, height, width),
+                maxshape=(totalFrames, height, width),
+                chunks = True,
+                dtype = 'uint8')
+    firstFrame = 0
+    lastFrame = totalFrames
+    r = range(firstFrame, lastFrame)
+    numberList = list([*r])
+    numberList.append(lastFrame)
+
+
+
+# read relevant video frames
 def read_vid():
-    with h5py.File(imagePath + '/images.h5', 'w') as f:
-        # incoming data
-        cap = cv.VideoCapture(imagePath + "/video.mkv")
-        count = 0
-        while cap.isOpened():
-            frame_no = cap.set(cv.CAP_PROP_POS_FRAMES, count)
-            ret, frame = cap.read()
+    # incoming data
+    cap = cv.VideoCapture(imagePath + "/video.mkv")
+    count = 0
+    while cap.isOpened():
+        frame_no = cap.set(cv.CAP_PROP_POS_FRAMES, count)
+        ret, frame = cap.read()
+        if ret != 1:
+            break
+        grayframe = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
 
-            if ret != 1:
-                break
+        grayframe = grayframe[np.newaxis, ... ].astype(np.uint8)
 
-
-            grayframe = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
-
-            # first file; create the dummy dataset with no max shape
-            if count == 0:
-                    noisy_dataset = f.create_dataset("noisy_images", **hf5_params) # compression="lzf", shuffle=True)count
-
-            # stack image array in 0-indexed position of third axis
-            f['noisy_images'][count,:,:]=grayframe
-            count += 1
-            if count == denoiseNum:
-                break
-
-
-        #set attributes for image dataset
-        noisy_dataset.attrs['CLASS'] = 'IMAGE'
-        noisy_dataset.attrs['IMAGE_VERSION'] = '1.2'
-        noisy_dataset.attrs['IMAGE_SUBCLASS'] =  'IMAGE_GRAYSCALE'
-        noisy_dataset.attrs['IMAGE_MINMAXRANGE'] = np.array([0,255], dtype=np.uint8)
-        noisy_dataset.attrs['IMAGE_WHITE_IS_ZERO'] =  0
-        # print attribute names and values
-        for k in f['noisy_images'].attrs.keys():
-            attr_value= f['noisy_images'].attrs[k]
-            print(k , attr_value)
+        # first file; create the dummy dataset with no max shape
+        if count == 0:
+            noisy_arrs = np.asarray(grayframe)
+        else:
+            noisy_arrs = np.append(noisy_arrs, grayframe, axis=0)
+        count += 1
+        #print(noisy_arrs)
+        if count == len(numberList):
+            break
+    return noisy_arrs
 
 
 ### Increase contrast by equalisizing histogram
-def enhance_contrast(bins=256): # https://gist.github.com/msameeruddin/8629aa0bf58521a22bb67ed0fea82fee
+def enhance_contrast(noisy_arrs, bins=256): # https://gist.github.com/msameeruddin/8629aa0bf58521a22bb67ed0fea82fee
     numberIndex = 0
-    with h5py.File(imagePath + '/images.h5', 'r+') as f:
-         low_contrast_slice = f['noisy_images'][:]
-         for z in low_contrast_slice:
+    for z in noisy_arrs:
 
-             image_flattened = z.flatten()
-             image_hist = np.zeros(bins)
+       # print(f'enhanceEQ z: {z}')
+        image_flattened = z.flatten()
+        image_hist = np.zeros(bins)
 
-             # frequency count of each pixel
-             for pix in z:
-                 image_hist[pix] += 1
+       # print(f'enhanceEQ noisyArrs: {noisy_arrs}')
+        # frequency count of each pixel
+        for pix in z:
+            image_hist[pix] += 1
+         # cumulative sum
+        cum_sum = np.cumsum(image_hist)
+        norm = (cum_sum - cum_sum.min()) * 255
+        #print(norm)
+        # normalization of the pixel values
+        n_ = cum_sum.max() - cum_sum.min()
+        uniform_norm = norm / n_
+        uniform_norm = uniform_norm.astype('int')
+        #print("uniform: ", uniform_norm)
+        # flat histogram
+        image_eq = uniform_norm[image_flattened]
+        # reshaping the flattened matrix to its original shape
+        image_eq = np.reshape(a=image_eq, newshape=z.shape)
 
-              # cumulative sum
-             cum_sum = np.cumsum(image_hist)
-             norm = (cum_sum - cum_sum.min()) * 255
-             #print(norm)
+        image_eq = image_eq[np.newaxis, ...].astype(np.uint8)
+        print(image_eq)
+        if numberIndex == 0:
+            eq_arrs = np.asarray(image_eq)
+            # layer the current array on top of previous array, write to file. Slow.
+            # Ideally, number of write processes should be minimized.
+        else:
+            eq_arrs = np.append(eq_arrs, image_eq, axis=0)
 
-             # normalization of the pixel values
-             n_ = cum_sum.max() - cum_sum.min()
-             uniform_norm = norm / n_
-             uniform_norm = uniform_norm.astype('int')
-             print("uniform: ", uniform_norm)
+        numberIndex += 1
 
-             # flat histogram
-             image_eq = uniform_norm[image_flattened]
 
-             # reshaping the flattened matrix to its original shape
-             image_eq = np.reshape(a=image_eq, newshape=z.shape)
-
-             # make a dataset to hold hi-contrast images, for further processing later
-             # first file; create the dummy dataset with no max shape
-             if numberIndex == 0:
-                 hi_contrast_dataset = f.create_dataset("hi_contrast_images", **hf5_params)
-
-             # layer the current array on top of previous array, write to file. Slow.
-             # Ideally, number of write processes should be minimized.
-             f['hi_contrast_images'][numberIndex,:,:]=image_eq
-
-             numberIndex += 1
-
-         #set attributes for image dataset
-         hi_contrast_dataset.attrs['CLASS'] = 'IMAGE'
-         hi_contrast_dataset.attrs['IMAGE_VERSION'] = '1.2'
-         hi_contrast_dataset.attrs['IMAGE_SUBCLASS'] =  'IMAGE_GRAYSCALE'
-         hi_contrast_dataset.attrs['IMAGE_MINMAXRANGE'] = np.array([0,255], dtype=np.uint8)
-         hi_contrast_dataset.attrs['IMAGE_WHITE_IS_ZERO'] =  0
-
-    return
+    return eq_arrs
 
 
 ### Blur image to reduce noise. We don't really need sharp edges to estimate motion with findTransformECC()
@@ -184,49 +183,43 @@ def denoising(arrays, numberIndex, num_frames_window):
 
     cleanImageArray = cv.fastNlMeansDenoisingMulti(srcImgs=arrays,
                         imgToDenoiseIndex=numberIndex, temporalWindowSize=num_frames_window,
-                          h=20, templateWindowSize=19, searchWindowSize=41) # h is filter strength. h=10 is default
+                          h=15, templateWindowSize=19, searchWindowSize=41) # h is filter strength. h=10 is default
     return cleanImageArray
 
 
 
 
 ### Main function for denoising and contrast enhancing of image arrays
-def denoise_hf5():
+def denoise_hf5(eq_arrs):
     numberIndex = 0
-    with h5py.File(imagePath + '/images.h5', 'r+') as f:
+    with h5py.File(imagePath + '/images.h5', 'w') as f:
 
         # load a slice containing n images from noisy dataset, not yet implemented
-        noisy_slice = f['hi_contrast_images'][:]
-        for z in noisy_slice:
-
-#    with Pool() as p:
-#        clean_arrays = p.map(denoise_hf5, noisy_slice)
-
-
-
-
+        for z in eq_arrs:
 
         # denoise image
-            if (numberIndex <= 1) or (numberIndex >= (denoiseNum - 2)):
+            if (numberIndex <= 1) or (numberIndex >= (len(numberList) - 3)):
                 # denoise two first and last images individually
                 cleanImageArray = cv.fastNlMeansDenoising(src=z,
-                            h=41, templateWindowSize=21, searchWindowSize=45)
+                            h=20, templateWindowSize=21, searchWindowSize=45)
 
-            elif (numberIndex <= 4) or (numberIndex >= (denoiseNum - 4)):
+            elif (numberIndex <= 4) or (numberIndex >= (len(numberList) - 5)):
                 # denoise using some neighbouring images as template
-                cleanImageArray = denoising(noisy_slice, numberIndex, 5)
+                cleanImageArray = denoising(eq_arrs, numberIndex, 5)
 
-            else:  #(numberIndex <= 7) or (numberIndex >= (denoiseNum - 7)):
+            else:  #(numberIndex <= 7) or (numberIndex >= (len(numberList) - 7)):
                 # denoise using more neighbouring images as template
-                cleanImageArray = denoising(noisy_slice, numberIndex, 9)
+                cleanImageArray = denoising(eq_arrs, numberIndex, 9)
 
         #         else:
                 # denoise using more neighbouring images as template
         #              cleanImageArray = denoising(noisy_slice, numberIndex, 13)
 
             blurredImageArray = blurring(cleanImageArray)
+            blurredImageArray = blurredImageArray[np.newaxis, ...].astype(np.uint8)
             if numberIndex == 0:
                 # layer the current array on top of previous array, write to file. Slow.
+                blurred_arrs = np.asarray(blurredImageArray)
                 # Ideally, number of write processes should be minimized.
                 clean_dataset = f.create_dataset("clean_images", **hf5_params) #, compression="lzf", shuffle=True)
                 #set attributes for image dataset
@@ -236,15 +229,21 @@ def denoise_hf5():
                 clean_dataset.attrs['IMAGE_MINMAXRANGE'] = np.array([0,255], dtype=np.uint8)
                 clean_dataset.attrs['IMAGE_WHITE_IS_ZERO'] =  0
 
-            f['clean_images'][numberIndex,:,:]=blurredImageArray
+            if numberIndex != 0:
+                blurred_arrs = np.append(blurred_arrs, blurredImageArray, axis=0)
+                #breakpoint()
 
             numberIndex += 1
+            print(f'Frame {numberIndex} of {len(numberList)} Denoised')
+
+        f['clean_images'].write_direct(blurred_arrs)
+
     return
 
 
 Transform_ECC_params = dict(warpMatrix = np.eye(2, 3, dtype=np.float32), # preparing unity matrix for x- and y- axis
                             motionType = cv.MOTION_TRANSLATION, # only motion in x- and y- axes
-                            criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 1000,  1E-10)) # max iteration count and desired epsilon. Terminates when either is reached.
+                            criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 5000,  0.0001)) # max iteration count and desired epsilon. Terminates when either is reached.
                             #gaussFiltSize = 5)
 
 
@@ -253,8 +252,12 @@ Transform_ECC_params = dict(warpMatrix = np.eye(2, 3, dtype=np.float32), # prepa
 def calc_ECC_transform(prevFrame, curFrame):
 
     # Calculate the transform matrix which must be applied to prevFrame in order to match curFrame
-    computedECC, ECCTransform = cv.findTransformECC(prevFrame, curFrame, **Transform_ECC_params)
-
+    try:
+        computedECC, ECCTransform = cv.findTransformECC(prevFrame, curFrame, **Transform_ECC_params)
+    except:
+        print('ECCTransform could not be found, setting transform equal to identity matrix')
+        ECCTransform = np.eye(2, 3, dtype=np.float32)
+        computedECC = 0
     # Extract second element of first and second row to be shift in their respective directions
     pdx, pdy = ECCTransform[0,2], ECCTransform[1,2]
 
@@ -269,7 +272,6 @@ def calc_ECC_transform(prevFrame, curFrame):
 max_filament_speed = 140 # mm/min
 max_filament_speed_sec = max_filament_speed / 60 # mm/s
 pixels_per_mm = 611 # estimated by counting pixels between edges of known object
-
 max_filament_speed = pixels_per_mm * max_filament_speed # pixels/second
 
 
@@ -291,21 +293,23 @@ def end_process():
     timestamp_gap = 0
     with h5py.File(imagePath + '/images.h5', 'r') as f:
         # load a slice containing n image arrays from clean dataset
-        clean_slice = f['clean_images'][:] #[:chunksize]
+        clean_slice = f['clean_images'][()] #[:chunksize]
 
-        print(clean_slice)
+        #print(clean_slice)
         # iterate over slice's first axis to make images from individual layers
         for z,x in zip(clean_slice, numberList):
 
             if k == 0:
                 prevFrame = z
+
                 k += 1
                 continue # nothing to do with just the first image array
             else:
                 # fetch specific line from cached file,an efficient method.
-                line = linecache.getline(imagePath + "/tstamps.txt", int(k+2))
-                total_timestamp = line.split("\n")[0] # store whatever comes before comma in the specific line as timestamp. microsecond format
-
+                line = linecache.getline(imagePath + "/tstamps.txt", (k+2)) # skip lines with metadata and first (0.0 sec) timestamp
+                total_timestamp = line.split("\n")[0] # store the specific line as timestamp. microsecond format
+                if total_timestamp == '':
+                    total_timestamp = 1E-10
                 timestamp_second = float(total_timestamp) / (1000) # convert from millisecond to second
                 timestamp_gap_s = timestamp_second - old_ts
                 timestamp_gap_m = timestamp_gap_s / 60 # convert from second to minute
@@ -344,32 +348,35 @@ def end_process():
 
 
     # plot velocity along x-axis
-    plt.figure(figsize=(12,8))
+    fig1 = plt.figure(figsize=(8,6))
     plt.plot(tsList, velocity_list_x, c = 'red', marker = 'o')
-    plt.xlabel('timestamp seconds', fontsize=12)
-    plt.ylabel('lateral motion [mm/min]', fontsize=12)
+    plt.xlabel('timestamp seconds', fontsize=8)
+    plt.ylabel('lateral velocity [mm/min]', fontsize=8)
+    fig1.savefig(fname = (f'{imagePath}/lateral_velocity_frames_{firstFrame}-{lastFrame}.png'), dpi = 300)
     plt.show()
 
 
     # plot velocity along y-axis
-    plt.figure(figsize=(12,8))
+    fig2 = plt.figure(figsize=(8,6))
     plt.plot(tsList, velocity_list_y, c = 'green', marker = 'o')
-    plt.xlabel('timestamp seconds', fontsize=12)
-    plt.ylabel('perpendicular motion [mm/min]', fontsize=12)
+    plt.xlabel('timestamp seconds', fontsize=8)
+    plt.ylabel('perpendicular velocity [mm/min]', fontsize=8)
+    fig2.savefig(fname = (f'{imagePath}/perpendicular_velocity_frames_{firstFrame}-{lastFrame}.png'), dpi = 300)
     plt.show()
 
 
 
 
 def main():
-    # get input
-    read_vid()
+    if continuation != 'True':
+        # get input
+        noisy_arrs = read_vid()
 
-    # enhance contrast
-    enhance_contrast()
+        # enhance contrast
+        eq_arrs = enhance_contrast(noisy_arrs)
 
-    # denoise images
-    denoise_hf5()
+        # denoise images
+        denoise_hf5(eq_arrs)
 
     # find velocity and present data
     end_process()
