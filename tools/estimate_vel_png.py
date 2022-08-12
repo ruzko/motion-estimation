@@ -242,7 +242,7 @@ def denoise_hf5(eq_arrs):
 
 
 Transform_ECC_params = dict(motionType = cv.MOTION_TRANSLATION, # only motion in x- and y- axes
-                            criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10000,  1E-6)) # max iteration count and desired epsilon. Terminates when either is reached.
+                            criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10000,  1E-4)) # max iteration count and desired epsilon. Terminates when either is reached.
                             #gaussFiltSize = 5)
 
 

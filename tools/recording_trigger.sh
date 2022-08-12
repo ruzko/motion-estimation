@@ -2,11 +2,12 @@
 
 # This script reads the state of a hardcoded pin every set interval, and if the pin is read 'HIGH',
 # a user-defined recording is launched. After the command is launched, the script exits.
-
+# This script expects raspivid to have the options "--signal" and "--initial pause"
 
 # First the user lets us know whether to launch a preset or custom command
 echo  'Please enter the recording command you wish to launch:'
 echo  'If you instead want to read a preset command from a file, press key f and enter'
+echo  'If command is immediately triggered, reset Teensy'
 rec_cmd=
 while [[ $rec_cmd = "" ]]; do
   read rec_cmd
@@ -27,11 +28,16 @@ fi
 # Set desired input pin
 echo "which pin would you like to read? (BCM numbering scheme) "
 read input_pin
+raspi-gpio set $input_pin pd
 if [ ! -e /sys/class/gpio/gpio$input_pin ]; then
     echo "$input_pin" > /sys/class/gpio/export
 fi
 echo "pin $input_pin is set as input pin"
 
+#initialize raspivid, check process id
+$rec_cmd
+sleep 0.2
+process_id=$(pgrep raspivid)
 
 #reading the input pin continuously, every interval
 declare -i i
@@ -41,15 +47,16 @@ while [ 1 ]; do
   if [[ $status = "1" ]]; then
     i+=1
   fi
-  sleep 0.5 #seconds
+  sleep 0.002 #seconds
   if [[ $status != "1" && i>="1" ]]; then
     i=0
   fi
-  if [[ $i = "5" ]]; then
+  if [[ $i = "2" ]]; then
     break
   fi
 done
 
 
-#run commmand
-$rec_cmd
+#send signal to start recording, get system timestamp for later comparison with recorded frames
+kill -USR1 $process_id
+echo $(($(date +%s%N)/1000)
