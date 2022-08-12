@@ -38,12 +38,13 @@ echo "pin $input_pin is set as input pin"
 $rec_cmd
 sleep 0.2
 process_id=$(pgrep raspivid)
+echo $process_id 
 
 #reading the input pin continuously, every interval
 declare -i i
 while [ 1 ]; do
   status=$(< /sys/class/gpio/gpio$input_pin/value)
-  #echo $status
+  echo $status
   if [[ $status = "1" ]]; then
     i+=1
   fi
