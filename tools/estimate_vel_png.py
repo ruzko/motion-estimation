@@ -218,7 +218,7 @@ def denoise_hf5(eq_arrs):
             blurredImageArray = blurring(cleanImageArray)
             blurredImageArray = blurredImageArray[np.newaxis, ...].astype(np.uint8)
             if numberIndex == 0:
-                # layer the current array on top of previous array, write to file. Slow.
+                # layer the current array on top of previous array
                 blurred_arrs = np.asarray(blurredImageArray)
                 # Ideally, number of write processes should be minimized.
                 clean_dataset = f.create_dataset("clean_images", **hf5_params) #, compression="lzf", shuffle=True)
@@ -236,14 +236,13 @@ def denoise_hf5(eq_arrs):
             numberIndex += 1
             print(f'Frame {numberIndex} of {len(numberList)} Denoised')
 
-        f['clean_images'].write_direct(blurred_arrs)
+        f['clean_images'].write_direct(blurred_arrs) #write all arrays at once. fast.
 
     return
 
 
-Transform_ECC_params = dict(warpMatrix = np.eye(2, 3, dtype=np.float32), # preparing unity matrix for x- and y- axis
-                            motionType = cv.MOTION_TRANSLATION, # only motion in x- and y- axes
-                            criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 5000,  0.0001)) # max iteration count and desired epsilon. Terminates when either is reached.
+Transform_ECC_params = dict(motionType = cv.MOTION_TRANSLATION, # only motion in x- and y- axes
+                            criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10000,  1E-6)) # max iteration count and desired epsilon. Terminates when either is reached.
                             #gaussFiltSize = 5)
 
 
@@ -251,13 +250,32 @@ Transform_ECC_params = dict(warpMatrix = np.eye(2, 3, dtype=np.float32), # prepa
 # Get total shift in x- and y- direction between two image frames / arrays
 def calc_ECC_transform(prevFrame, curFrame):
 
-    # Calculate the transform matrix which must be applied to prevFrame in order to match curFrame
-    try:
-        computedECC, ECCTransform = cv.findTransformECC(prevFrame, curFrame, **Transform_ECC_params)
-    except:
-        print('ECCTransform could not be found, setting transform equal to identity matrix')
-        ECCTransform = np.eye(2, 3, dtype=np.float32)
-        computedECC = 0
+    # Construct scale pyramid to speed up and improve accuracy of transform estimation
+    nol = 4 # number of layers
+    init_warp = np.eye(2, 3, dtype=np.float32)
+    warp = init_warp * np.array([[1, 1, 2], [1, 1, 2]], dtype=np.float32)**(1-nol)
+    prevFrame = [prevFrame]
+    curFrame = [curFrame]
+    for level in range(nol):
+        prevFrame.insert(0, cv.resize(prevFrame[0], None, fx=1/2, fy=1/2,
+                                   interpolation=cv.INTER_AREA))
+        curFrame.insert(0, cv.resize(curFrame[0], None, fx=1/2, fy=1/2,
+                                   interpolation=cv.INTER_AREA))
+
+    # run pyramid ECC
+    for level in range(nol):
+        # Calculate the transform matrix which must be applied to prevFrame in order to match curFrame
+        try:
+            computedECC, ECCTransform = cv.findTransformECC(prevFrame[level], curFrame[level], warp, **Transform_ECC_params)
+        except:
+            print('ECCTransform could not be found, setting transform equal to identity matrix')
+            ECCTransform = np.eye(2, 3, dtype=np.float32)
+            computedECC = 0
+
+        if level != nol-1:  # scale up for the next pyramid level
+            warp = warp * np.array([[1, 1, 2], [1, 1, 2]], dtype=np.float32)
+
+
     # Extract second element of first and second row to be shift in their respective directions
     pdx, pdy = ECCTransform[0,2], ECCTransform[1,2]
 
