@@ -59,4 +59,4 @@ done
 
 #send signal to start recording, get system timestamp for later comparison with recorded frames
 kill -USR1 $process_id
-echo $(($(date +%s%N)/1000)
+echo $(($(date +%s%N)/1000))
