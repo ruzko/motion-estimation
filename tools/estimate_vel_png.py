@@ -83,17 +83,22 @@ width, height, totalFrames = get_meta()
 
 
 if lastFrame != -1:
-    hf5_params = dict(shape=(len(numberList), height, width),
-                maxshape=(len(numberList), height, width),
-                chunks = True,
-                dtype = 'uint8')
+    hf5_params = dict(maxshape=(len(numberList)+10, height, width),
+                chunks = (10, height, width),
+                dtype = 'uint8',
+                compression="gzip",
+                compression_opts=7,
+                shuffle=True)
 
 
 if lastFrame == -1:
-    hf5_params = dict(shape=(totalFrames, height, width),
-                maxshape=(totalFrames, height, width),
-                chunks = True,
-                dtype = 'uint8')
+    hf5_params = dict(maxshape=(totalFrames+10, height, width),
+                chunks = (10, height, width),
+                dtype = 'uint8',
+                compression="gzip",
+                compression_opts=7,
+                shuffle=True)
+
     firstFrame = 0
     lastFrame = totalFrames
     r = range(firstFrame, lastFrame)
@@ -106,9 +111,9 @@ if lastFrame == -1:
 def read_vid():
     # incoming data
     cap = cv.VideoCapture(imagePath + "/video.mkv")
-    count = 0
+    k = 0
     while cap.isOpened():
-        frame_no = cap.set(cv.CAP_PROP_POS_FRAMES, count)
+        frame_no = cap.set(cv.CAP_PROP_POS_FRAMES, k)
         ret, frame = cap.read()
         if ret != 1:
             break
@@ -117,20 +122,20 @@ def read_vid():
         grayframe = grayframe[np.newaxis, ... ].astype(np.uint8)
 
         # first file; create the dummy dataset with no max shape
-        if count == 0:
+        if k == 0:
             noisy_arrs = np.asarray(grayframe)
         else:
             noisy_arrs = np.append(noisy_arrs, grayframe, axis=0)
-        count += 1
+        k += 1
         #print(noisy_arrs)
-        if count == len(numberList):
+        if k == len(numberList):
             break
     return noisy_arrs
 
 
 ### Increase contrast by equalisizing histogram
 def enhance_contrast(noisy_arrs, bins=256): # https://gist.github.com/msameeruddin/8629aa0bf58521a22bb67ed0fea82fee
-    numberIndex = 0
+    k = 0
     for z in noisy_arrs:
 
        # print(f'enhanceEQ z: {z}')
@@ -157,22 +162,43 @@ def enhance_contrast(noisy_arrs, bins=256): # https://gist.github.com/msameerudd
 
         image_eq = image_eq[np.newaxis, ...].astype(np.uint8)
         print(image_eq)
-        if numberIndex == 0:
+        if k == 0:
             eq_arrs = np.asarray(image_eq)
             # layer the current array on top of previous array, write to file. Slow.
             # Ideally, number of write processes should be minimized.
         else:
             eq_arrs = np.append(eq_arrs, image_eq, axis=0)
 
-        numberIndex += 1
-
+        k += 1
 
     return eq_arrs
 
 
+
+def adaptive_histogram_equalization(noisy_arrs):
+    k = 0
+    clahe = cv.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    for z in noisy_arrs:
+        equalized = clahe.apply(z)
+        equalized = equalized[np.newaxis, ...].astype(np.uint8)
+        print(equalized)
+        if k == 0:
+            eq_arrs = np.asarray(equalized)
+            # layer the current array on top of previous array, write to file. Slow.
+            # Ideally, number of write processes should be minimized.
+        else:
+            eq_arrs = np.append(eq_arrs, equalized, axis=0)
+
+        k += 1
+
+    return eq_arrs
+
+
+
+
 ### Blur image to reduce noise. We don't really need sharp edges to estimate motion with findTransformECC()
 def blurring(sharpImage):
-    blurredImage = cv.GaussianBlur(sharpImage, (21, 21), sigmaX=0)
+    blurredImage = cv.GaussianBlur(sharpImage, (5, 5), sigmaX=0)
 
     return blurredImage
 
@@ -191,50 +217,53 @@ def denoising(arrays, numberIndex, num_frames_window):
 
 ### Main function for denoising and contrast enhancing of image arrays
 def denoise_hf5(eq_arrs):
-    numberIndex = 0
+    k = 0
     with h5py.File(imagePath + '/images.h5', 'w') as f:
 
         # load a slice containing n images from noisy dataset, not yet implemented
         for z in eq_arrs:
 
-        # denoise image
-            if (numberIndex <= 1) or (numberIndex >= (len(numberList) - 3)):
-                # denoise two first and last images individually
-                cleanImageArray = cv.fastNlMeansDenoising(src=z,
-                            h=20, templateWindowSize=21, searchWindowSize=45)
+            try: # Try, to enable error handling
+                # denoise image
+                if (k <= 1) or (k >= (len(numberList) - 3)):
+                    # denoise two first and last images individually
+                    cleanImageArray = cv.fastNlMeansDenoising(src=z,
+                                h=20, templateWindowSize=21, searchWindowSize=45)
 
-            elif (numberIndex <= 4) or (numberIndex >= (len(numberList) - 5)):
-                # denoise using some neighbouring images as template
-                cleanImageArray = denoising(eq_arrs, numberIndex, 5)
+                elif (k <= 4) or (k >= (len(numberList) - 5)):
+                    # denoise using some neighbouring images as template
+                    cleanImageArray = denoising(eq_arrs, k, 5)
 
-            else:  #(numberIndex <= 7) or (numberIndex >= (len(numberList) - 7)):
-                # denoise using more neighbouring images as template
-                cleanImageArray = denoising(eq_arrs, numberIndex, 9)
+                else:  #(numberIndex <= 7) or (numberIndex >= (len(numberList) - 7)):
+                    # denoise using more neighbouring images as template
+                    cleanImageArray = denoising(eq_arrs, k, 9)
+            except:
+                print('something went wrong with denoising')
 
-        #         else:
-                # denoise using more neighbouring images as template
-        #              cleanImageArray = denoising(noisy_slice, numberIndex, 13)
+                break
+            #         else:
+                    # denoise using more neighbouring images as template
+            #              cleanImageArray = denoising(noisy_slice, numberIndex, 13)
 
             blurredImageArray = blurring(cleanImageArray)
             blurredImageArray = blurredImageArray[np.newaxis, ...].astype(np.uint8)
-            if numberIndex == 0:
+            if k == 0:
                 # layer the current array on top of previous array
                 blurred_arrs = np.asarray(blurredImageArray)
                 # Ideally, number of write processes should be minimized.
-                clean_dataset = f.create_dataset("clean_images", **hf5_params) #, compression="lzf", shuffle=True)
-                #set attributes for image dataset
-                clean_dataset.attrs['CLASS'] = 'IMAGE'
-                clean_dataset.attrs['IMAGE_VERSION'] = '1.2'
-                clean_dataset.attrs['IMAGE_SUBCLASS'] =  'IMAGE_GRAYSCALE'
-                clean_dataset.attrs['IMAGE_MINMAXRANGE'] = np.array([0,255], dtype=np.uint8)
-                clean_dataset.attrs['IMAGE_WHITE_IS_ZERO'] =  0
 
-            if numberIndex != 0:
+            if k != 0:
                 blurred_arrs = np.append(blurred_arrs, blurredImageArray, axis=0)
                 #breakpoint()
-
-            numberIndex += 1
-            print(f'Frame {numberIndex} of {len(numberList)} Denoised')
+            k += 1
+            print(f'Frame {k} of {len(numberList)} Denoised')
+        clean_dataset = f.create_dataset("clean_images", shape=(blurred_arrs.shape), **hf5_params)
+        #set attributes for image dataset
+        clean_dataset.attrs['CLASS'] = 'IMAGE'
+        clean_dataset.attrs['IMAGE_VERSION'] = '1.2'
+        clean_dataset.attrs['IMAGE_SUBCLASS'] =  'IMAGE_GRAYSCALE'
+        clean_dataset.attrs['IMAGE_MINMAXRANGE'] = np.array([0,255], dtype=np.uint8)
+        clean_dataset.attrs['IMAGE_WHITE_IS_ZERO'] =  0
 
         f['clean_images'].write_direct(blurred_arrs) #write all arrays at once. fast.
 
@@ -242,7 +271,7 @@ def denoise_hf5(eq_arrs):
 
 
 Transform_ECC_params = dict(motionType = cv.MOTION_TRANSLATION, # only motion in x- and y- axes
-                            criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10000,  1E-4)) # max iteration count and desired epsilon. Terminates when either is reached.
+                            criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10000,  0.0001)) # max iteration count and desired epsilon. Terminates when either is reached.
                             #gaussFiltSize = 5)
 
 
@@ -283,6 +312,7 @@ def calc_ECC_transform(prevFrame, curFrame):
     print("\n\nECC confidence of transform: ", computedECC, "\npixel delta x-axis: ", pdx, "\npixel delta y-axis: ", pdy)
 
     return  pdx, pdy
+
 
 
 
@@ -366,20 +396,26 @@ def end_process():
 
 
     # plot velocity along x-axis
-    fig1 = plt.figure(figsize=(8,6))
-    plt.plot(tsList, velocity_list_x, c = 'red', marker = 'o')
-    plt.xlabel('timestamp seconds', fontsize=8)
-    plt.ylabel('lateral velocity [mm/min]', fontsize=8)
-    fig1.savefig(fname = (f'{imagePath}/lateral_velocity_frames_{firstFrame}-{lastFrame}.png'), dpi = 300)
+    fig1 = plt.figure(figsize=(100,40))
+    plt.plot(tsList, velocity_list_x, c = 'red', marker = 'o', linewidth='4')
+    plt.grid(color='green', linestyle='-')
+    plt.xlabel('timestamp seconds', fontsize=32)
+    plt.ylabel('lateral velocity [mm/min]', fontsize=32)
+    plt.xticks(fontsize=24)
+    plt.yticks(fontsize=24)
+    fig1.savefig(fname = (f'{imagePath}/lateral_velocity_frames_{firstFrame}-{lastFrame}.png'), dpi =100)
     plt.show()
 
 
     # plot velocity along y-axis
-    fig2 = plt.figure(figsize=(8,6))
-    plt.plot(tsList, velocity_list_y, c = 'green', marker = 'o')
-    plt.xlabel('timestamp seconds', fontsize=8)
-    plt.ylabel('perpendicular velocity [mm/min]', fontsize=8)
-    fig2.savefig(fname = (f'{imagePath}/perpendicular_velocity_frames_{firstFrame}-{lastFrame}.png'), dpi = 300)
+    fig2 = plt.figure(figsize=(100,20))
+    plt.plot(tsList, velocity_list_y, c = 'green', marker = 'o', linewidth='4')
+    plt.grid(color='r', linestyle='-')
+    plt.xlabel('timestamp seconds', fontsize=32)
+    plt.ylabel('perpendicular velocity [mm/min]', fontsize=32)
+    plt.xticks(fontsize=24)
+    plt.yticks(fontsize=24)
+    fig2.savefig(fname = (f'{imagePath}/perpendicular_velocity_frames_{firstFrame}-{lastFrame}.png'), dpi = 100)
     plt.show()
 
 
@@ -391,7 +427,7 @@ def main():
         noisy_arrs = read_vid()
 
         # enhance contrast
-        eq_arrs = enhance_contrast(noisy_arrs)
+        eq_arrs = adaptive_histogram_equalization(noisy_arrs)
 
         # denoise images
         denoise_hf5(eq_arrs)

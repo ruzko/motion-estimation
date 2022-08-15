@@ -35,6 +35,7 @@ fi
 echo "pin $input_pin is set as input pin"
 
 #initialize raspivid to background, check process id
+pkill raspivid&
 $rec_cmd&
 sleep 0.2
 process_id=$(pgrep raspivid)
