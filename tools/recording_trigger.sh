@@ -36,8 +36,9 @@ echo "pin $input_pin is set as input pin"
 
 #initialize raspivid to background, check process id
 pkill raspivid&
+sleep 1
 $rec_cmd&
-sleep 0.2
+sleep 0.3
 process_id=$(pgrep raspivid)
 #echo $process_id
 
@@ -60,6 +61,6 @@ done
 
 
 #send signal to start recording, get system timestamp for later comparison with recorded frames
-kill -USR1 $process_id
+kill -SIGUSR1 $process_id
 echo 'recording triggered at [unix time, millis]:'
 echo $(($(date +%s%N)/1000))
