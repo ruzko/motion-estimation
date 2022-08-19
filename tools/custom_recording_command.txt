@@ -1,1 +1,0 @@
-AM_testbench_rec.sh 4000
