@@ -1,0 +1,9 @@
+h264decoder==0.0.0
+h5py==3.7.0
+imageio==2.19.3
+matplotlib==3.5.2
+numpy==1.23.0
+opencv_contrib_python==4.6.0.66
+Pillow==9.2.0
+rawpy==0.17.1
+scipy==1.8.1

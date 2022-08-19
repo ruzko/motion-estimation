@@ -45,7 +45,7 @@ def check_histogram_distribution(image_matrix, bins=256):
 
     return cum_sum, norm
 
-print norm
+print(norm)
 
 def signalToNoise(image, axis=0, ddof=0):
     a = np.asanyarray(image)
@@ -79,7 +79,7 @@ def raw_conversion(raw_images):
             rgb = raw.postprocess(
                 fbdd_noise_reduction=rawpy.FBDDNoiseReductionMode.Full,
                 no_auto_bright=False, output_bps=8)
-                grayframe = cv.cvtColor(rgb, cv.COLOR_BGR2GRAY)
+            grayframe = cv.cvtColor(rgb, cv.COLOR_BGR2GRAY)
 
 
 
