@@ -3,7 +3,7 @@
 # Copyright Jacob Dybvald Ludvigsen, 2022
 # you may use this software for any purpose, as long as you include the above Copyright notice,
 # and follow the conditions of the licence.
-# This is free software, licenced under BSD-3-Clause
+# This is free software, licenced under GPL v3.0
 
 
 #install dependencies:
@@ -30,8 +30,7 @@ from pathlib import Path # to handle directory paths properly
 
 
 
-# Take input, expand to range, convert to list with leading zeroes and return
-#@profile
+### Get input
 def retFileList():
     numberList = []
     firstFrame = ''
@@ -75,7 +74,7 @@ firstFrame, lastFrame, numberList, imagePath, continuation, use_h264 = retFileLi
 
 
 
-
+### get video metadata for regular video
 def get_meta():
     for fileName in Path(imagePath).glob("*.mkv"):
         vid_file = str(fileName)
@@ -91,8 +90,9 @@ def get_meta():
     return width, height, totalFrames
 
 
+
+### get video metadata for h264 video. currently broken
 def get_meta_h264():
-    #incoming data
     for fileName in Path(imagePath).glob("*.h264"):
         vid = open(fileName, 'rb')
         decoder = h264decoder.H264Decoder()
@@ -124,6 +124,7 @@ if lastFrame == -1:
 
 
 
+### Read h264 format video. currently broken
 def read_vid_h264():
     k = 0
     #incoming data
@@ -155,33 +156,42 @@ def read_vid_h264():
         #print(noisy_arrs)
         if k == len(numberList):
             break
+
     return noisy_arrs
 
 
 
-# read relevant video frames
+### read relevant video frames from regular video, convert to grayscale and layer them
 def read_vid_mkv():
-    # incoming data
     cap = cv.VideoCapture(imagePath + "/video.mkv")
-    k = 0
-    while cap.isOpened():
+    k = firstFrame
+    ret = 1
+    while ret:
+        # set current frame to read
         frame_no = cap.set(cv.CAP_PROP_POS_FRAMES, k)
+
         ret, frame = cap.read()
         if ret != 1:
             break
-        grayframe = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
 
+        # grayscale
+        grayframe = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
+        # add axis to enable appending
         grayframe = grayframe[np.newaxis, ... ].astype(np.uint8)
 
-        # first file; create the dummy dataset with no max shape
-        if k == 0:
+
+        if k == firstFrame:
+            # make the first array
             noisy_arrs = np.asarray(grayframe)
+
         else:
+            # layer the current array on top of previous array
             noisy_arrs = np.append(noisy_arrs, grayframe, axis=0)
+
         k += 1
-        #print(noisy_arrs)
-        if k == len(numberList):
+        if k == lastFrame:
             break
+
     return noisy_arrs
 
 
@@ -195,11 +205,13 @@ def adaptive_histogram_equalization(noisy_arrs):
         equalized = clahe.apply(z)
         equalized = equalized[np.newaxis, ...].astype(np.uint8)
         print(equalized)
+
         if k == 0:
+            # make the first array
             eq_arrs = np.asarray(equalized)
-            # layer the current array on top of previous array, write to file. Slow.
-            # Ideally, number of write processes should be minimized.
+
         else:
+            # layer the current array on top of previous array
             eq_arrs = np.append(eq_arrs, equalized, axis=0)
 
         k += 1
@@ -235,7 +247,7 @@ hf5_params = dict(maxshape=(len(numberList)+10, height, width),
             shuffle=True)
 
 
-## Main function for denoising and contrast enhancing of image arrays
+## Main function for denoising and blurring of image arrays
 def denoise_hf5(eq_arrs):
     k = 0
     with h5py.File(imagePath + '/images.h5', 'w') as f:
@@ -259,9 +271,6 @@ def denoise_hf5(eq_arrs):
                 print('something went wrong with denoising')
 
                 break
-            #         else:
-                    # denoise using more neighbouring images as template
-            #              cleanImageArray = denoising(noisy_slice, numberIndex, 13)
 
             # blurredImageArray = blurring(cleanImageArray) # blur to further reduce noise
             blurredImageArray = cleanImageArray[np.newaxis, ...].astype(np.uint8) # add axis to enable appending
@@ -298,7 +307,9 @@ Transform_ECC_params = dict(motionType = cv.MOTION_TRANSLATION, # only motion in
 
 
 # Get total shift in x- and y- direction between two image frames / arrays
+# Most of this function is not my own work, and I therefore don't have licensing rights. It is excepted from the general licence of the script. Taken from: https://stackoverflow.com/questions/45997891/cv2-motion-euclidean-for-the-warp-mode-in-ecc-image-alignment-method/45998244#45998244
 def calc_ECC_transform(prevFrame, curFrame):
+
     # Construct scale pyramid to speed up and improve accuracy of transform estimation
     nol = 4 # number of layers
     init_warp = np.eye(2, 3, dtype=np.float32) # identity matrix
@@ -349,6 +360,7 @@ def calc_ECC_transform(prevFrame, curFrame):
 
 
 
+
 FB_opt_flow_params=dict(pyr_scale=.5,
                          levels=3,
                          winsize= 16,
@@ -358,6 +370,7 @@ FB_opt_flow_params=dict(pyr_scale=.5,
                          flags= 1)
 
 
+### For sake of comparison with optical flow, I put in a small dense flow calculation
 def calculate_dense_flow(prevFrame, curFrame):
 
     flow = cv.calcOpticalFlowFarneback(prevFrame, curFrame, None, **FB_opt_flow_params)
@@ -368,8 +381,8 @@ def calculate_dense_flow(prevFrame, curFrame):
 
 
 
-# These two variables anchor motion estimates to real-world values
-max_filament_speed = 140 # mm/min
+# These variables anchor motion estimates to real-world values
+max_filament_speed = 140 # mm/min. However, under slip-stick conditions, this speed may be exceeded.
 max_filament_speed_sec = max_filament_speed / 60 # mm/s
 pixels_per_mm = 611 # estimated by counting pixels between edges of known object.
 max_filament_speed = pixels_per_mm * max_filament_speed # pixels/second
@@ -389,6 +402,7 @@ total_timestamp_list = [] # cumulative timestamps
 
 
 
+### Read motion from encoder csv file
 def encoder_velocity():
     k = 2
     camera_triggered = 0
@@ -400,8 +414,9 @@ def encoder_velocity():
     for fileName in Path(imagePath).glob("*tstamps.txt"):
         tstamp_fileName = str(fileName)
         break
-    # fetch specific line from cached file,an efficient method.
+    # fetch specific line at lastFrame index
     line = linecache.getline(tstamp_fileName, lastFrame)
+    # the maximum timestamp for optical estimation
     total_timestamp_opt = float(line.split("\n")[0]) / 1000
 
 
@@ -411,15 +426,11 @@ def encoder_velocity():
         break
 
     while camera_triggered == 0:
-        line = linecache.getline(encoder_log, k)
-        camera_triggered = int(line.split(",")[8].split("\n")[0][0])
-
         k += 1
-
-        if camera_triggered == 1:
-            k -= 2
-
-            break
+        line = linecache.getline(encoder_log, k)
+        # The value showing whether extruder is active and therefore whether camera recording is triggered,
+        # is at channel 9.
+        camera_triggered = int(line.split(",")[8].split("\n")[0][0])
 
 
 
@@ -428,7 +439,7 @@ def encoder_velocity():
         line = linecache.getline(encoder_log, k)
         if line == "":
             break
-        encoder_timestamp = float(line.split(",")[0]) #
+        encoder_timestamp = float(line.split(",")[0]) # millisecond
         filament_position = float(line.split(",")[2]) # mm
 
         if firstRunFlag == 1:
@@ -465,7 +476,7 @@ def encoder_velocity():
 
 
 
-
+### Main process for motion and velocity estimation
 def end_process(clean_arrs):
     k = 0
     failed_estimates = 0
@@ -560,14 +571,14 @@ def end_process(clean_arrs):
 
 
 
-
+### Encoder data has uniform time intervals, camera data does not.
+### This function resamples both datasets to timeseries with a common uniform time interval
 def dataset_correlation(optical_pos, optical_ts, encoder_pos, encoder_ts):
-    #breakpoint()
     k = 0
     interpolated_vel_list_opt = []
     interpolated_vel_list_enc = []
 
-    # interpolate data, hitting all original datapoints
+    # interpolate data, passing through all original datapoints
     f_interpolated_opt_pos = interpolate.Akima1DInterpolator(optical_ts, optical_pos)
     f_interpolated_enc_pos = interpolate.Akima1DInterpolator(encoder_ts, encoder_pos)
 
@@ -601,9 +612,6 @@ def dataset_correlation(optical_pos, optical_ts, encoder_pos, encoder_ts):
 
 
 
-
-
-
 correlated_position_csv_headers = ['timestamp [s]', 'position optical', 'position encoder']
 
 def presentData(out_information, velocity_list_x, velocity_list_y, tsList, interpolated_opt_pos, interpolated_enc_pos, interpolated_tsList, interpolated_vel_list_enc, interpolated_vel_list_opt):
@@ -620,6 +628,8 @@ def presentData(out_information, velocity_list_x, velocity_list_y, tsList, inter
         for value in zip(interpolated_tsList, interpolated_opt_pos, interpolated_enc_pos):
             csvwriter.writerow(value)
 
+
+# having many datapoints begets high resolution graphs
 
 #    # plot velocity along x-axis (lateral)
 #    fig1 = plt.figure(figsize=(100,40))
