@@ -301,12 +301,14 @@ def denoise_hf5(eq_arrs):
 
 
 
-
 # Get total shift in x- and y- direction between two image frames / arrays
 # Most of this function is not my own work, and I therefore don't have licensing rights. It is excepted from the general licence of the script. Taken from: https://stackoverflow.com/questions/45997891/cv2-motion-euclidean-for-the-warp-mode-in-ecc-image-alignment-method/45998244#45998244
 def calc_ECC_transform(prevFrame, curFrame):
-    _epsilon = 10
-    termCriteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 400, _epsilon)
+    epsilon_ = 0.1
+    Transform_ECC_params = dict(motionType = cv.MOTION_TRANSLATION, # only motion in x- and y- axes
+                            criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 200,  epsilon_))
+
+    #termCriteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 400, epsilon_)
     # Construct scale pyramid to speed up and improve accuracy of transform estimation
     nol = 4 # number of layers
     numPasses = 4 # number of passes with gradually reduced epsilon
@@ -318,30 +320,37 @@ def calc_ECC_transform(prevFrame, curFrame):
                                    interpolation=cv.INTER_AREA))
         curFrame.insert(0, cv.resize(curFrame[0], None, fx=1/2, fy=1/2,
                                    interpolation=cv.INTER_AREA))
-    breakpoint()
+    #breakpoint()
     # run pyramid ECC
 
 
     for passNumber in range(numPasses):
-        _epsilon = _epsilon * 0.1
+        epsilon_ = epsilon_ * 0.1
         ECCTransform_in = init_warp * np.array([[1, 1, 2], [1, 1, 2]], dtype=np.float32)**(1-nol) # adjust warp according to scale of array
         for level in range(nol):
-
             # Calculate the transform matrix which must be applied to prevFrame in order to match curFrame
             try:
-
-                computedECC, ECCTransform = cv.findTransformECC(prevFrame[level], curFrame[level], ECCTransform_in, motionType = cv.MOTION_TRANSLATION, criteria = termCriteria)
+                computedECC, ECCTransform = cv.findTransformECC(prevFrame[level], curFrame[level], ECCTransform_in, **Transform_ECC_params)
                 measurement_flag = 1
-                init_warp = ECCTransform
-            except:
-                print(f'\nECCTransform could not be found for layer {level+1} of {nol} with {termCriteria}')
+                #print(f'ECCTransform: {ECCTransform} \ncc: {computedECC}\n\n')
 
+            except:
+                print(f'\nECCTransform could not be found for layer {level+1} of {nol}')
                 ECCTransform = ECCTransform_in    # np.eye(2, 3, dtype=np.float32)
                 #computedECC = 0
                 measurement_flag = 0
-
             if level != nol-1:  # scale up for the next pyramid level, unless the next layer is the original image
                 ECCTransform_in = ECCTransform * np.array([[1, 1, 2], [1, 1, 2]], dtype=np.float32)
+
+            if level == nol-1:
+                init_warp = ECCTransform
+
+
+
+
+
+
+
 
 
     # Extract second element of first and second row, which is translation in their respective directions
