@@ -91,7 +91,7 @@ with rawpy.imread(random_frame) as raw:
 
 
 hf5_params = dict(shape=(len(numberList), height, width),
-                  maxshape=(len(numberList), height, width),
+                  maxshape=(len(numberList), height, width), 
                   chunks = True,
                   dtype = 'uint8')
 
